@@ -1,4 +1,4 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -118,7 +118,10 @@ if (-f $filename) {
     
 } else {
 
-  my ($fh, $file) = mkstemp( "tmpfile-in-XXXXX" );
+  # srcml 1.1.0 requires a file extension to parse source code correctly,
+  # even when --language is specified. Use SUFFIX so the temp file gets
+  # the original file's extension (e.g. .c or .h).
+  my ($fh, $file) = tempfile( "tmpfile-in-XXXXX", SUFFIX => ".$fileExt" );
   my ($fout, $outfile) = mkstemp( "tmpfile-out-XXXXX" );
 
   print $fh $contents;
