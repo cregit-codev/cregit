@@ -79,7 +79,6 @@ in
   languages.scala = { enable = true; };
 
   # sbt 0.13.x uses Security Manager API, removed in JDK 17+
-  env.SBT_OPTS = "-Djava.security.manager=allow";
 
   tasks = {
     # ── 1. C++ tokenizer ─────────────────────────────────────────────────────
@@ -183,3 +182,5 @@ in
     };
   };
 }
+
+
