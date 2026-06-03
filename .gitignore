@@ -2,3 +2,5 @@ jars
 *project/project
 *target
 *build
+.devenv
+.direnv
