@@ -47,7 +47,7 @@ my $repo = shift @ARGV;
 my $file = shift @ARGV;
 my $dest = shift @ARGV;
 
-my ($fh, $temp) = mkstemp( "tmpfile-XXXXX" );
+my ($fh, $temp) = mkstemp( "build/tmpfile-XXXXX" );
 
 Usage("Error [$file] should be a file in repository [$repo] [$repo/$file]\n\n usage $0 <repo> <filename> <destinationDir>") unless -f "$repo/$file";
 Usage( "Error [$repo] should be a git repo\n\nUsage $0 <repo> <filename> <destinationDir>") unless -d "$repo/.git";

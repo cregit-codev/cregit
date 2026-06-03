@@ -96,7 +96,7 @@ my $outputFile = shift @ARGV;
 my $title = shift @ARGV;
 $cregitRepoURL = shift @ARGV;
 
-my ($fh, $temp) = mkstemp( "tmpfile-XXXXX" );
+my ($fh, $temp) = mkstemp( "build/tmpfile-XXXXX" );
 
 select($fh);
 
