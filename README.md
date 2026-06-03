@@ -14,22 +14,10 @@
 |-|-|-|
 | srcml | https://www.srcml.org/              | Make sure srcml is in path |
 | ctags | https://github.com/universal-ctags  | Make sure ctags is in path |
-| bfg   | https://github.com/dmgerman/bfg-repo-cleaner/tree/blobexec | Download this branch |
 
-### bfg
-
-Obtain the above bfg branch:
-
-```sh
-git clone https://github.com/dmgerman/bfg-repo-cleaner.git --branch blobexec
-```
-
-Build in the bfg root directory:
-
-```sh
-sbt
-bfg/assembly
-```
+The tokenization step is now provided by the [blobExec](./blobExec) sbt module
+(consumes upstream `com.madgag:bfg-library` from Maven Central). It replaces the
+previous `dmgerman/bfg-repo-cleaner@blobexec` fork. See [blobExec/README.md](./blobExec/README.md).
 
 ### Dependencies
 
@@ -49,6 +37,8 @@ https://www.scala-sbt.org/download.html repo):
 ```sh
 sbt one-jar
 ```
+
+Compile [blobExec](./blobExec) with `sbt assembly` in its directory (replaces the old bfg fork).
 
 Use `make` to compile [srcMLtoken](./tokenize/srcMLtoken).
 
@@ -83,8 +73,11 @@ Run it as:
 
 ```sh
 export BFG_MEMO_DIR=/tmp/memo
-export BFG_TOKENIZE_CMD=/home/dmg/git.dmg/cregit-scala/tokenize/tokenizeSrcMl.pl --srcml2token=/home/dmg/git.dmg/cregit-scala/tokenize/srcMLtoken/srcml2token --srcml=srcml --ctags=/usr/local/bin/ctags
-java -jar bfg-cregit.jar '--blob-exec:/home/dmg/git.dmg/cregit-scala/tokenizeByBlobId/tokenBySha.pl=.[ch]$' --no-blob-protection /path/repo
+export BFG_TOKENIZE_CMD="/path/to/cregit/tokenize/tokenizeSrcMl.pl --srcml2token=/path/to/cregit/tokenize/srcMLtoken/srcml2token --srcml=srcml --ctags=/usr/local/bin/ctags"
+java -jar /path/to/cregit/blobExec/target/scala-2.13/blobExec-0.1.0-assembly.jar \
+  /path/repo \
+  /path/to/cregit/tokenizeByBlobId/tokenBySha.pl \
+  '\.[ch]$'
 ```
 
 ### b. Create the history database for the original repo

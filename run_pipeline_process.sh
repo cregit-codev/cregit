@@ -29,7 +29,7 @@ end_step() {
 }
 
 CREGIT=$(pwd)
-BFG="${CREGIT}/../bfg-repo-cleaner/bfg/target/bfg-1.12.16-SNAPSHOT-blobexec-fbf55a1-dirty.jar"
+BFG="${CREGIT}/blobExec/target/scala-2.13/blobExec-0.1.0-assembly.jar"
 WORK="../cregit-files"
 REPO_GIT_URL="https://github.com/jqlang/jq.git"
 REPO_COMMIT_URL="https://github.com/jqlang/jq/commit/"
@@ -56,6 +56,11 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+
+# A full run starts clean; resuming (FROM_STEP >= 2) keeps existing work.
+if [ "$FROM_STEP" = "1" ] && [ -d "$WORK" ] && [ -n "$WORK" ] && [ "$WORK" != "/" ]; then
+    rm -rf "$WORK"
+fi
 
 LOG_FILE="${WORK}/pipeline.log"
 mkdir -p $WORK/memo $WORK/blame $WORK/html
@@ -102,8 +107,9 @@ export BFG_TOKENIZE_CMD="${CREGIT}/tokenize/tokenizeSrcMl.pl \
   --ctags=$(which ctags)"
 
 java -jar $BFG \
-  "--blob-exec:${CREGIT}/tokenizeByBlobId/tokenBySha.pl=\.[ch]\$" \
-  --no-blob-protection $REPO_PATH_CREGIT_BARE
+  $REPO_PATH_CREGIT_BARE \
+  ${CREGIT}/tokenizeByBlobId/tokenBySha.pl \
+  '\.[ch]$'
 
 git --git-dir=$REPO_PATH_CREGIT_BARE reflog expire --expire=now --all
 git --git-dir=$REPO_PATH_CREGIT_BARE gc --prune=now --aggressive
