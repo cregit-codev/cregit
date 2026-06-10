@@ -46,8 +46,7 @@ DB_PATH_PERSONS="${WORK}/${REPO_NAME}-persons.db"
 XLS_PATH_PERSONS="${WORK}/${REPO_NAME}-persons.xls"
 DATASET_PATH="${WORK}/${REPO_NAME}-dataset.parquet"
 
-PYTHON=".venv/bin/python3"
-[ -f "$PYTHON" ] || PYTHON=$(which python3)
+PYTHON=$(which python3)
 
 cleanup() {
     local ec=$?

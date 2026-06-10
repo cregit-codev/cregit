@@ -59,6 +59,9 @@ let
     p.SetScalar
     p.TextAutoformat
   ]);
+
+  # Python 3 with duckdb — used by generate_dataset.py
+  pythonEnv = pkgs.python3.withPackages (ps: [ ps.duckdb ]);
 in
 {
   packages = [
@@ -73,6 +76,7 @@ in
     pkgs.sqlite
     pkgs.git-filter-repo     # filter linux repo to a subsystem before running cregit
     perlEnv                  # Perl + all required modules in @INC
+    pythonEnv                # Python 3 + duckdb
   ];
 
   languages.java  = { enable = true; jdk.package = pkgs.jdk8; };
