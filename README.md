@@ -125,6 +125,12 @@ Example:
 perl ./prettyPrintFiles.pl --verbose /tmp/xournal-cregit.db /tmp/xournal-persons.db ~/git.hacking.mine/xournal /tmp/blame /tmp/html https://github.com/dmgerman/xournal-next/commit/ '\.[ch]$'
 ```
 
+## Contributing
+
+Contributions are welcome! Please read our [contributing guide](CONTRIBUTING.md) before opening an issue or pull request.
+
+For larger changes, please open an issue first to discuss the proposal.
+
 ## License
 
 The license of Cregit is [GPL-3.0+](LICENSE.md).
