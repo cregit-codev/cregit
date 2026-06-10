@@ -96,7 +96,10 @@ my $outputFile = shift @ARGV;
 my $title = shift @ARGV;
 $cregitRepoURL = shift @ARGV;
 
-my ($fh, $temp) = mkstemp( "build/tmpfile-XXXXX" );
+# build/ tempdir anchored to the script's dir, not the caller's CWD.
+my $buildDir = "$commandPath/build";
+make_path($buildDir) if not -d $buildDir;
+my ($fh, $temp) = mkstemp( "$buildDir/tmpfile-XXXXX" );
 
 select($fh);
 
