@@ -1,18 +1,18 @@
-* Introduction
+# slickGitLog
 
-This program scans a git repository and extracts metadata of the commits into a sqlite3 database
+This program scans a git repository and extracts metadata of the commits into a _sqlite3_ database.
 
+## How to run
 
-* How to run
-
+```sh
 java -jar gitLogToDB.jar <dbfile> <pathToGitrepo>
+```
 
+## Schema
 
-* Schema
+Main commits table:
 
-- Main commits table
-
-#+BEGIN_SRC sql
+```sql
 CREATE TABLE commits (
     cid character(40),
     autname TEXT,
@@ -24,11 +24,11 @@ CREATE TABLE commits (
     summary varchar,
     ismerge boolean,
     PRIMARY KEY(cid));
-#+END_SRC
+```
 
-- Parents of commits
+Parents of commits:
 
-#+BEGIN_SRC sql
+```sql
 CREATE TABLE parents (
     cid character(40),
     idx integer,
@@ -38,11 +38,11 @@ CREATE TABLE parents (
     FOREIGN KEY(cid) REFERENCES commits(cid),
     FOREIGN KEY(parent) REFERENCES commits(cid)
 );
-#+END_SRC
+```
 
-- Footers (such as Sign-Off-By)
+Footers (such as "_Sign-Off-By_"):
 
-#+BEGIN_SRC sql
+```sql
 CREATE TABLE footers (
     cid character(40),
     idx integer,
@@ -53,11 +53,11 @@ CREATE TABLE footers (
     FOREIGN KEY(cid) REFERENCES commits(cid),
     FOREIGN KEY(parent) REFERENCES commits(cid)
 );
-#+END_SRC
+```
 
-- Full log. it is stored in a different table due than commits
+Full log. it is stored in a different table due than commits:
 
-#+BEGIN_SRC sql
+```sql
 CREATE TABLE logs (
     cid character(40),
     log TEXT,
@@ -65,12 +65,14 @@ CREATE TABLE logs (
     PRIMARY KEY(cid),
     FOREIGN KEY(cid) REFERENCES commits(cid)
 );
-#+END_SRC
+```
 
-* License
+## License
 
 This software is licensed under the GPL+3.0
 
+| | | |
+|-|-|-|
 | jgit        | https://eclipse.org/jgit/           | BSD3   |
 | poi scala   | https://github.com/folone/poi.scala | Apache-2.0   |
 | apache poi  | https://poi.apache.org/             | Apache-2.0   |
@@ -78,8 +80,6 @@ This software is licensed under the GPL+3.0
 | sqlite-jdbc |                                     | Apache-2.0   |
 | HikariCP    |                                     | Apache-2.0   |
 
-* TODO
+## TODO
 
-- many of the footers returned by jgit are invalid. there is need for a whitelist of 
-  key values.
-
+- Many of the footers returned by `jgit` are invalid. There is need for an allowlist of key-values.

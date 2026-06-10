@@ -1,5 +1,0 @@
-M4 tokenizer from:
-
-https://github.com/luser/pym4
-
-clone on Feb 18, 2018
