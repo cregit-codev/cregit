@@ -36,6 +36,11 @@ use File::Temp qw/ tempfile tempdir mkstemp/;
 use strict;
 use File::Path qw(make_path);
 use File::Copy;
+use FindBin qw($RealBin);
+
+# build/ tempdir anchored to the script's dir, not the caller's CWD.
+my $buildDir = "$RealBin/build";
+make_path($buildDir) if not -d $buildDir;
 
 
 #my $shaDir = '/home/replay/git/token.sha1/';
@@ -121,8 +126,8 @@ if (-f $filename) {
   # srcml 1.1.0 requires a file extension to parse source code correctly,
   # even when --language is specified. Use SUFFIX so the temp file gets
   # the original file's extension (e.g. .c or .h).
-  my ($fh, $file) = tempfile( "build/tmpfile-in-XXXXX", SUFFIX => ".$fileExt" );
-  my ($fout, $outfile) = mkstemp( "build/tmpfile-out-XXXXX" );
+  my ($fh, $file) = tempfile( "$buildDir/tmpfile-in-XXXXX", SUFFIX => ".$fileExt" );
+  my ($fout, $outfile) = mkstemp( "$buildDir/tmpfile-out-XXXXX" );
 
   print $fh $contents;
   close $fh;
