@@ -43,10 +43,6 @@ my $buildDir = "$RealBin/build";
 make_path($buildDir) if not -d $buildDir;
 
 
-#my $shaDir = '/home/replay/git/token.sha1/';
-#my $shaDir = '/home/replay/linux/token.sha/';
-#my $shaDir = '/tmp/token.sha/';
-
 my %mapLang = (
                "c" => 'C',
                "c++" => 'C++',

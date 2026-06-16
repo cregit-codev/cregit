@@ -49,7 +49,7 @@ Perl scripts can be run without compilation.
 This is the workflow to process a git repository with cregit, and to generate the HTML views of its contributions.
 
 - It assumes that the cregit-repository will be created in `/tmp/xournal`
-- The original repository is located at `/home/dmg/git.hacking.mine/xournal`
+- The original repository is usually located at `/path/to/xournal`
 
 ### a. Create the view repository
 
@@ -83,7 +83,7 @@ java -jar /path/to/cregit/blobExec/target/scala-2.13/blobExec-0.1.0-assembly.jar
 ### b. Create the history database for the original repo
 
 ```sh
-java -jar slickGitLog.jar /tmp/xournal-original.db /home/dmg/git.hacking.mine/xournal
+java -jar slickGitLog.jar /tmp/xournal-original.db /path/to/xournal
 ```
 
 ### c. Create the history database for the cregit repo
@@ -95,7 +95,7 @@ java -jar slickGitLog.jar /tmp/xournal-cregit.db /tmp/xournal
 ### d. Create the persons database
 
 ```sh
-java -jar persons.jar /home/dmg/git.hacking.mine/xournal /tmp/xournal.xls /tmp/xournal-persons.db
+java -jar persons.jar /path/to/xournal /tmp/xournal.xls /tmp/xournal-persons.db
 ```
 
 ### e. Create blame of cregit files
@@ -115,7 +115,7 @@ java -jar remapCommits.jar /tmp/xournal-cregit.db /tmp/xournal
 Example:
 
 ```sh
-perl ./prettyPrintFiles.pl --verbose /tmp/xournal-cregit.db /tmp/xournal-persons.db ~/git.hacking.mine/xournal /tmp/blame /tmp/html https://github.com/dmgerman/xournal-next/commit/ '\.[ch]$'
+perl ./prettyPrintFiles.pl --verbose /tmp/xournal-cregit.db /tmp/xournal-persons.db /path/to/xournal /tmp/blame /tmp/html https://github.com/OWNER/xournal/commit/ '\.[ch]$'
 ```
 
 ## Contributing

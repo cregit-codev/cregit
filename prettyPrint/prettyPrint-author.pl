@@ -67,8 +67,6 @@ my $cregitVersion = "1.0-RC2";
 #my $title = shift @ARGV;
 #my $headerFileName = shift @ARGV;
 #my $footerFileName = shift @ARGV;
-#my $dbName = '/home/linux/linux-token-bfg-4_10.db';
-#my $authorsDB = '/home/dmg/git.projects/l.analysis/new-authors/unified-authors.db';
 
 my $headerFileName = $commandPath . "/header.html";
 my $footerFileName = $commandPath . "/footer.html";
