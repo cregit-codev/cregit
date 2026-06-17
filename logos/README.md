@@ -1,5 +1,7 @@
-The cregit logo was created by Craig Ross and Daniel German.  
+# Logos
+
+The cregit logo was created by Craig Ross and Daniel German.
+
 It is licensed under the Creative Commons Share Alike License Version 4.0.
 
 It is based on the git logo which is licensed under the Creative Commons Attribution 3.0.
-

@@ -21,6 +21,11 @@ use File::Temp qw/ tempfile tempdir mkstemp/;
 use File::Copy;
 use Getopt::Long;
 use Pod::Usage;
+use FindBin qw($RealBin);
+
+# build/ tempdir anchored to the script's dir, not the caller's CWD.
+my $buildDir = "$RealBin/build";
+make_path($buildDir) if not -d $buildDir;
 
 my $blameExtension = ".blame";
 my $help = 0;
@@ -47,7 +52,7 @@ my $repo = shift @ARGV;
 my $file = shift @ARGV;
 my $dest = shift @ARGV;
 
-my ($fh, $temp) = mkstemp( "build/tmpfile-XXXXX" );
+my ($fh, $temp) = mkstemp( "$buildDir/tmpfile-XXXXX" );
 
 Usage("Error [$file] should be a file in repository [$repo] [$repo/$file]\n\n usage $0 <repo> <filename> <destinationDir>") unless -f "$repo/$file";
 Usage( "Error [$repo] should be a git repo\n\nUsage $0 <repo> <filename> <destinationDir>") unless -d "$repo/.git";
