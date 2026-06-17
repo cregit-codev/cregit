@@ -72,6 +72,9 @@ let
     p.SetScalar
     p.TextAutoformat
   ]);
+  
+  pythonEnv = pkgs.python3.withPackages (ps: [ ps.duckdb ]);
+
 in
 {
   packages = [
@@ -87,6 +90,7 @@ in
     pkgs.sbt
 
     perlEnv
+    pythonEnv
   ];
 
   # Scala 2.13 + sbt 1.x needs a modern JDK; the legacy sbt 0.13 hack is gone.

@@ -515,6 +515,7 @@ sub Print {
 }
 
 sub Skip_Literal {
+    # Python equivalent: skip_literal (generate_dataset.py:113)
     my ($literal)= @_;
     my $original = $literal;
     my $text = "";
@@ -596,6 +597,7 @@ sub Is_Not_Whitespace {
 
 
 sub Skip_Comment {
+    # Python equivalent: skip_comment (generate_dataset.py:95)
     my ($comment) = @_;
     my $text;
 
@@ -667,6 +669,7 @@ sub Skip_Token2 {
 }
 
 sub Skip_Token {
+    # Python equivalent: skip_token (generate_dataset.py:81)
     my ($token) = @_;
     my $text;
     $token =~ s/\s//g;
@@ -700,6 +703,7 @@ sub Skip_Token {
     }
     
     sub Read_Src_Char {
+        # Python equivalent: SourceReader.read_char (generate_dataset.py:39)
         my $ch ;
 
 
@@ -721,6 +725,7 @@ sub Skip_Token {
     }
 
     sub Un_Read_Char {
+        # Python equivalent: SourceReader.unread_char (generate_dataset.py:56)
         ($lastChar) = @_;
 
         if ($lastChar eq "\n") {
@@ -734,7 +739,7 @@ sub Skip_Token {
     }
 
     sub Skip_Whitespace {
-        
+        # Python equivalent: skip_whitespace (generate_dataset.py:133)
         my $ch;
 
         while (defined($ch = Read_Src_Char)) {
@@ -747,6 +752,7 @@ sub Skip_Token {
     }
 
     sub Location {
+        # Python equivalent: SourceReader.location (generate_dataset.py:64)
         return ($row, $col);
     }
 

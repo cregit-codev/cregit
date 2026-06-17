@@ -1,12 +1,26 @@
 #!/usr/bin/env python3
 """Post-processing script: generate unified Parquet dataset from CreGit pipeline outputs.
 
+#
+# This Python implementation replicates token-matching logic from:
+#   prettyPrint/prettyPrint-author.pl
+#
+# Keep the following in sync with the Perl original:
+#
+#   SourceReader      <-> Read_Src_Char / Un_Read_Char / Location / Skip_Whitespace  (Perl: lines 690-753)
+#   skip_token        <-> Skip_Token      (Perl: line 669)
+#   skip_comment      <-> Skip_Comment    (Perl: line 598)
+#   skip_literal      <-> Skip_Literal    (Perl: line 517)
+#   skip_whitespace   <-> Skip_Whitespace (Perl: line 736)
+#   classify_and_skip <-> main loop       (Perl: lines 350-408)
+#
+
 Usage:
-  .venv/bin/python3 generate_dataset.py \\
-      --blame-dir  ../cregit-files/blame \\
-      --source-dir ../cregit-files/jq-original \\
-      --cregit-db  ../cregit-files/jq-cregit.db \\
-      --persons-db ../cregit-files/jq-persons.db \\
+  uv run python3 generate_dataset/generate_dataset.py \
+      --blame-dir  ../cregit-files/blame \
+      --source-dir ../cregit-files/jq-original \
+      --cregit-db  ../cregit-files/jq-cregit.db \
+      --persons-db ../cregit-files/jq-persons.db \
       --output     ../cregit-files/jq-dataset.parquet
 """
 
@@ -28,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 
 class SourceReader:
+    # Perl equivalent: Read_Src_Char / Un_Read_Char / Location (prettyPrint-author.pl:702)
     def __init__(self, source_text: str):
         self.source = source_text
         self.pos = 0
@@ -79,6 +94,7 @@ def consume(s: str) -> tuple[str, str]:
 
 
 def skip_token(token_value: str, reader: SourceReader) -> str:
+    # Perl equivalent: Skip_Token (prettyPrint-author.pl:669)
     text = ""
     stripped = re.sub(r"\s", "", token_value)
     remaining = len(stripped)
@@ -93,6 +109,7 @@ def skip_token(token_value: str, reader: SourceReader) -> str:
 
 
 def skip_comment(token_value: str, reader: SourceReader) -> str:
+    # Perl equivalent: Skip_Comment (prettyPrint-author.pl:598)
     text = ""
     while token_value:
         ch = reader.read_char()
@@ -111,6 +128,7 @@ def skip_comment(token_value: str, reader: SourceReader) -> str:
 
 
 def skip_literal(token_value: str, reader: SourceReader) -> str:
+    # Perl equivalent: Skip_Literal (prettyPrint-author.pl:517)
     text = ""
     while token_value:
         cT, token_value = consume(token_value)
@@ -131,6 +149,7 @@ def skip_literal(token_value: str, reader: SourceReader) -> str:
 
 
 def skip_whitespace(reader: SourceReader) -> str:
+    # Perl equivalent: Skip_Whitespace (prettyPrint-author.pl:736)
     text = ""
     while True:
         ch = reader.read_char()
@@ -143,6 +162,7 @@ def skip_whitespace(reader: SourceReader) -> str:
 
 
 def classify_and_skip(token_content: str, reader: SourceReader) -> dict:
+    # Perl equivalent: token-classification logic in main loop (prettyPrint-author.pl:350)
     before_line, before_col = reader.location()
 
     if token_content.startswith("begin_unit"):
@@ -212,7 +232,7 @@ def classify_and_skip(token_content: str, reader: SourceReader) -> dict:
             "func_name": None,
         }
 
-    m = re.match(r"^(.+?)\|(.*)$", token_content)
+    m = re.match(r"^(.+?)\|(.+)$", token_content)
     if not m:
         return {
             "token_type": "unknown",
