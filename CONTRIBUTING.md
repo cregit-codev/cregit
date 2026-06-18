@@ -23,6 +23,17 @@ Examples:
 - `fix(prettyPrint): escape HTML output correctly`
 - `docs: rewrite root README in Markdown`
 
+Do:
+
+- use the imperative mood
+- keep the summary specific to the change
+
+Don't:
+
+- use vague summaries such as `fix stuff` or `update docs`
+- mix unrelated changes under one commit
+- end the subject line with a period
+
 ### Allowed types
 
 - `feat`
@@ -83,7 +94,7 @@ This can be:
 - manual test steps
 - example commands and outputs
 
-_Documentation-only_ changes **do not** require testing.
+_Documentation-only_ changes do not require testing.
 
 ## Documentation
 
