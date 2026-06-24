@@ -5,7 +5,12 @@ version := "0.1.0"
 scalaVersion := "2.13.16"
 
 libraryDependencies ++= Seq(
-  "com.madgag" %% "bfg-library" % "1.15.0"
+  // bfg-library is kept only for the FormerCommitFooter cross-check test and
+  // because it transitively pulls in the jgit version we walk against. The
+  // production code no longer uses RepoRewriter / ObjectIdCleaner.
+  "com.madgag" %% "bfg-library" % "1.15.0",
+  "org.xerial" % "sqlite-jdbc" % "3.46.1.0",
+  "org.scalatest" %% "scalatest" % "3.2.19" % Test
 )
 
 assembly / assemblyJarName := s"blobExec-${version.value}-assembly.jar"
