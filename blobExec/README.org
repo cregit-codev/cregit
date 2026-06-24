@@ -1,0 +1,254 @@
+#+TITLE: blobExec
+#+OPTIONS: toc:2
+
+* Overview
+
+Tokenization driver for the cregit pipeline (step 2). Walks a source git repo
+and builds a *new* bare destination repo whose matching blobs have each been
+rewritten by piping them through a per-blob command. Persists
+=(orig → new)= mappings for commits, trees, blobs, and refs to SQLite so a
+subsequent invocation can resume incrementally — only commits/blobs that have
+appeared in the source since the last run are reprocessed.
+
+Built on jgit directly. The previous in-place BFG-based rewriter has been
+replaced (BFG remains as a transitive jgit pin and as the reference for the
+=Former-commit-id:= footer test).
+
+* Build
+
+Needs sbt 1.x + Scala 2.13 + JDK 21 (provided by the project's =devenv.nix=).
+
+#+begin_src sh
+sbt assembly
+#+end_src
+
+Produces =target/scala-2.13/blobExec-0.1.0-assembly.jar=.
+
+* Use
+
+#+begin_src sh
+java -jar blobExec-0.1.0-assembly.jar [--abort-on-error] \
+  <src.git> <dst.git> <db.sqlite> <command> <fileMaskRegex>
+#+end_src
+
+| Arg                | Meaning                                                                    |
+|--------------------+----------------------------------------------------------------------------|
+| =<src.git>=        | Bare source repo (read-only)                                               |
+| =<dst.git>=        | Bare destination repo. Created with =git init --bare= if it doesn't exist  |
+| =<db.sqlite>=      | SQLite mapping file. Created with schema if absent                         |
+| =<command>=        | Absolute path to the per-blob script                                       |
+| =<fileMaskRegex>=  | Regex matched against each blob's filename, e.g. ='\.[ch]$'=               |
+| =--abort-on-error= | Exit 2 on the first non-zero =<command>= exit (default: skip the blob)     |
+
+For each blob whose filename matches =<fileMaskRegex>=, =<command>= is
+invoked with:
+
+- stdin              = original blob bytes
+- env =BFG_BLOB=     = original blob's 40-hex object id
+- env =BFG_FILENAME= = blob's basename in the tree
+- env =BFG_PATH=     = blob's full repo-root relative path (e.g. =src/lib/foo.c=)
+
+The command's stdout replaces the blob's bytes. Non-zero exit or
+identical-to-input output leaves the blob unchanged. Every rewritten commit
+gets =Former-commit-id: <orig-sha>= appended to its message (byte-for-byte
+compatible with BFG's =FormerCommitFooter=, which the cregit =remapCommits=
+step parses from each commit's last line).
+
+=BFG_FILENAME= is kept for backward compatibility with cregit's
+=tokenBySha.pl= (which keys its memo cache by basename). New tokenizers can
+use =BFG_PATH= to make path-aware decisions.
+
+In the pipeline, =<command>= is =tokenizeByBlobId/tokenBySha.pl=, which also
+reads =BFG_MEMO_DIR= and =BFG_TOKENIZE_CMD= from the environment. That
+script's own per-blob memo cache is independent of and complementary to the
+SQLite mapping maintained by this jar.
+
+* Incremental updates
+
+If =<dst.git>= and =<db.sqlite>= both already exist when the program runs,
+the walk is incremental:
+
+- The =RevWalk= marks every commit already in =commit_map= as uninteresting,
+  so only newly-pushed commits in =<src.git>= are visited.
+- For each visited commit, blob lookups against =blob_map= skip any
+  =(orig_blob, path)= pair that has been processed before.
+- Subtrees whose root id is in =tree_map= are reused wholesale without
+  re-walking.
+- All refs in =<src.git>= under =refs/heads/=, =refs/tags/=, and
+  =refs/remotes/= are re-projected into =<dst.git>= on every run and
+  recorded in =ref_map=. Branches get =kind='head'=; lightweight tags get
+  =kind='lightweight_tag'=; annotated tags are rewritten as new tag objects
+  pointing at the mapped commit and get =kind='annotated_tag'=. Symbolic
+  refs (e.g. =refs/remotes/origin/HEAD=) are linked into dst as-is and not
+  recorded. Refs in those tracked namespaces that exist in dst but no
+  longer in src are deleted from dst (and from =ref_map=). Other namespaces
+  (e.g. =refs/notes/=) are left alone.
+
+After deletions, =git --git-dir=<dst.git> gc --prune=now= reclaims commits,
+trees, and blobs that were only reachable through removed refs.
+
+The first run records =command= and =fileMaskRegex= in the =meta= table.
+Subsequent runs that pass a different command or mask abort immediately
+(=MetaMismatchException=) — rewriting with a different tokenizer would
+invalidate every cached mapping. To rotate the tokenizer, delete =<dst.git>=
+and =<db.sqlite>= and start fresh.
+
+* SQLite schema
+
+=PRAGMA foreign_keys = ON= is set on every connection.
+
+#+begin_src sql
+CREATE TABLE commit_map (
+  orig_commit  TEXT PRIMARY KEY,
+  new_commit   TEXT    NOT NULL,
+  processed_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+);
+CREATE TABLE blob_map (
+  orig_blob    TEXT    NOT NULL,
+  path         TEXT    NOT NULL,         -- full repo-root relative path
+  new_blob     TEXT    NOT NULL,
+  processed_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
+  PRIMARY KEY (orig_blob, path)
+);
+CREATE TABLE tree_map (
+  orig_tree    TEXT PRIMARY KEY,
+  new_tree     TEXT    NOT NULL,
+  processed_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+);
+CREATE TABLE ref_map (
+  ref_name     TEXT PRIMARY KEY,         -- refs/heads/master, refs/tags/v1.0, refs/remotes/origin/foo, ...
+  kind         TEXT    NOT NULL CHECK (kind IN ('head','annotated_tag','lightweight_tag')),
+  orig_target  TEXT    NOT NULL,
+  new_target   TEXT    NOT NULL,
+  orig_commit  TEXT    NOT NULL REFERENCES commit_map(orig_commit) ON DELETE CASCADE,
+  new_commit   TEXT    NOT NULL,         -- = commit_map[orig_commit]
+  processed_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+);
+CREATE TABLE meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+#+end_src
+
+** Per-table notes
+
+*** =commit_map=
+
+One row per source commit visited. =new_commit= is the rewritten commit's
+SHA in dst (different from =orig_commit= because the =Former-commit-id:=
+footer changes the commit's bytes).
+
+*** =blob_map=
+
+Keyed by =(orig_blob, path)= where =path= is the full repo-root relative
+path (=src/lib/foo.c=, not =foo.c=). Using the full path enables
+fine-grained per-path processing decisions in the tokenizer and lets the
+database double as an audit trail ("what was the dst SHA for
+=src/lib/foo.c=?").
+
+*Non-matching blobs are also recorded* as identity rows
+(=orig_blob == new_blob=). =blob_map= is therefore the authoritative set of
+"every blob+path the walker has seen in src," useful for verifying
+processing coverage. For the xournal repo: 1019 rewritten + 545 identity =
+1564 rows.
+
+*** =tree_map=
+
+One row per tree id, mapping the source tree to the rewritten tree. Used
+as a cross-run memo to short-circuit walks of subtrees we've already
+processed.
+
+*Caveat — shared-subtree-with-different-parent-path.* =tree_map= is keyed
+by =orig_tree= alone. If the same subtree id appears under two different
+parent paths in different commits, the walker short-circuits the second
+one via the tree cache and does NOT record =blob_map= rows at the
+alternate path. The dst output is still correct (the cached =new_tree=
+references the same rewritten blobs); =blob_map= is just less than
+exhaustive for the rare moved-subtree case.
+
+*** =ref_map=
+
+One row per non-symbolic ref under =refs/heads/=, =refs/tags/=, or
+=refs/remotes/=. =ref_map.orig_commit= is the only foreign key in the
+schema — a ref mapping cannot outlive the commit it points at.
+=ON DELETE CASCADE= means removing a =commit_map= row (not something the
+walker does today, but a maintenance operation might) also removes any
+refs that pointed at it.
+
+**** =target= vs =commit= — why both columns?
+
+A git ref points at a single object. Most refs point at a commit, but
+*annotated tags* have an extra layer: the ref points at a *tag object*
+(its own thing in the object database, with its own SHA, tagger, message,
+optional signature), and that tag object's =object= field points at the
+commit. Getting from the ref to the commit is called *peeling*.
+
+The =target= columns hold what the ref points at directly. The =commit=
+columns hold what the ref ultimately resolves to after peeling. For the
+two ref kinds without a tag object, the two are equal:
+
+| kind              | =orig_target= / =new_target=            | =orig_commit= / =new_commit=          |
+|-------------------+-----------------------------------------+---------------------------------------|
+| =head=            | the commit                              | same commit                           |
+| =lightweight_tag= | the commit                              | same commit                           |
+| =annotated_tag=   | the *tag object* (different SHA)        | the commit the tag object wraps       |
+
+For =head= and =lightweight_tag=, =target= and =commit= columns are equal
+by construction — they're kept separate for schema uniformity so any query
+like "what does =refs/tags/v1.0= point at in dst?" can read =new_target=
+regardless of kind.
+
+For =annotated_tag=, the walker rewrites the tag object: it builds a new
+tag object in dst whose =object= field points at =commit_map[orig_commit]=,
+preserving the tagger and message from the source tag. =new_target= is
+the SHA of that new tag object; =new_commit= is the mapped commit it
+wraps.
+
+*** =meta=
+
+Two rows: =command= and =mask= (the values passed on the first run).
+Subsequent runs with a different command or mask abort with
+=MetaMismatchException=.
+
+** =processed_at=
+
+The unix-epoch second at which the row was first inserted. Inserts use
+=INSERT OR IGNORE= for =commit_map=, =blob_map=, =tree_map=, so the
+timestamp is preserved on re-runs — query =WHERE processed_at >= $T= to
+find all rows produced since a given run. =ref_map= uses =INSERT OR
+REPLACE= because refs can be retargeted (a branch moves, a tag gets
+re-issued), so its =processed_at= reflects the last update.
+
+* Testing
+
+#+begin_src sh
+sbt test
+#+end_src
+
+Unit tests cover the footer formatter (cross-checked against BFG's own
+=CommitNode.add=), the SQLite mapping wrapper, and the per-blob execution
+helper. The =WalkerIntegrationSpec= builds synthetic source repos with jgit
+and exercises the end-to-end walk: identity command, transforming command,
+cache hits, incremental runs, annotated- and lightweight-tag recording,
+retag, tag/branch deletion (with =ref_map= cleanup), meta mismatch, and
+submodule (gitlink) passthrough.
+
+For an end-to-end check on a real repo, run against the in-tree =xournal=
+clone with the bundled =test/list_symbols.py= (which uses =ctags= to emit
+one line per function/variable):
+
+#+begin_src sh
+java -jar target/scala-2.13/blobExec-0.1.0-assembly.jar \
+  xournal /tmp/xournal-dst.git /tmp/xournal-map.sqlite \
+  "$(pwd)/test/list_symbols.py" '\.[ch]$'
+#+end_src
+
+A second invocation with the same arguments should report
+=commitsProcessed=0= and finish in well under a second.
+
+* Pipeline integration (follow-up)
+
+=run_pipeline_process.sh= still calls the old three-arg form. Step 2's
+pre-clone (=git clone --bare ORIGINAL CREGIT_BARE=) becomes unnecessary
+since this jar creates the destination repo itself, and step 3's invocation
+needs the new five-arg form. That change lives in a separate PR.
