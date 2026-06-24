@@ -51,6 +51,13 @@ This is the workflow to process a git repository with cregit, and to generate th
 - It assumes that the cregit-repository will be created in `/tmp/xournal`
 - The original repository is usually located at `/path/to/xournal`
 
+### Observation
+
+The pipeline steps can be run all at once using script run_pipeline_process.sh. Use run_pipeline_process.sh --help command for showing options.
+
+Example run with default parameters (used jqlang/jq repository):
+![Example cregit run](cregit.gif)
+
 ### a. Create the view repository
 
 To tokenize the files we require to create some environment variables to communicate with the tokenizing script:
