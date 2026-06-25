@@ -101,7 +101,10 @@ if [ "$STEP_NUM" -ge "$FROM_STEP" ]; then
 
 export BFG_MEMO_DIR="${WORK}/memo"
 
-export BFG_TOKENIZE_CMD="${CREGIT}/tokenize/tokenizeSrcMl.pl \
+# Route through the tokenize.pl dispatcher (not tokenizeSrcMl.pl directly) so it can
+# fan out by language: srcML for .c/.h, rustTokenizer for .rs, etc. The --srcml* /
+# --ctags paths are forwarded only to the srcML parser. Behavior-preserving for C.
+export BFG_TOKENIZE_CMD="${CREGIT}/tokenize/tokenize.pl \
   --srcml2token=${CREGIT}/tokenize/srcMLtoken/srcml2token \
   --srcml=$(which srcml) \
   --ctags=$(which ctags)"
