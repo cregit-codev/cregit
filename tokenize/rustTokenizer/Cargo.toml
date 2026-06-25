@@ -1,0 +1,16 @@
+[package]
+name = "rust_tokenizer"
+version = "0.1.0"
+edition = "2021"
+description = "Rust source tokenizer for the cregit pipeline. Emits tokens with line:col positions in the format consumed by blameRepo and prettyPrint."
+
+[dependencies]
+rustc_lexer = "0.1"
+
+[[bin]]
+name = "rust_tokenizer"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

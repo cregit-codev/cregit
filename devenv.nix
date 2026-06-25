@@ -92,4 +92,8 @@ in
   # Scala 2.13 + sbt 1.x needs a modern JDK; the legacy sbt 0.13 hack is gone.
   languages.java  = { enable = true; jdk.package = pkgs.jdk21; };
   languages.scala = { enable = true; };
+
+  # Rust toolchain for tokenize/rustTokenizer (the .rs tokenizer).
+  # Default channel (nixpkgs) — avoids needing the rust-overlay input.
+  languages.rust.enable = true;
 }

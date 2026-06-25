@@ -33,6 +33,7 @@ my %extensions = (
                   ".java" => "Java",
                   ".am" => "M4",
                   ".ac" => "M4",
+                  ".rs" => "Rust",
                  );
 
 my $basedir = dirname($0);
@@ -41,12 +42,14 @@ $basedir = "." if ($basedir eq "");
 
 my $srcMlparser = "$basedir/tokenizeSrcMl.pl";
 my $m4Parser    = "$basedir/m4Tokenizer/m4.py";
+my $rustParser  = "$basedir/rustTokenizer/target/release/rust_tokenizer";
 
 
 my %parsers = ("C" => $srcMlparser,
                "C++" => $srcMlparser,
                "Java" => $srcMlparser,
                "M4" => $m4Parser,
+               "Rust" => $rustParser,
               );
 
 
@@ -54,21 +57,33 @@ use Getopt::Long;
 
 my $usage = "
 Usage $0 [options] <sourcefilename> <outputfile>*
-        
+
 Options:
-   --language=<C/C++/Java/m4>
+   --language=<C/C++/Java/m4/Rust>
    --position
+   --srcml=<path>          (forwarded to srcML-based parsers only)
+   --srcml2token=<path>    (forwarded to srcML-based parsers only)
+   --ctags=<path>          (forwarded to srcML-based parsers only)
 ";
 
 
 my $language = "";
 my $verbose;
 my $position = 0;
+# srcML-specific options. Accepted here so a single caller (e.g. BFG_TOKENIZE_CMD)
+# can pin the binary paths once and have them reach tokenizeSrcMl.pl without knowing
+# which language each blob is. For non-srcML parsers (Rust, M4) these are ignored.
+my $srcmlPath = "";
+my $srcml2tokenPath = "";
+my $ctagsPath = "";
 
 GetOptions (
             "language=s"      => \$language,
             "position"        => \$position,
-            "verbose"  => \$verbose)   # flag
+            "verbose"         => \$verbose,
+            "srcml=s"         => \$srcmlPath,
+            "srcml2token=s"   => \$srcml2tokenPath,
+            "ctags=s"         => \$ctagsPath)
   or die($usage);
 
 
@@ -125,6 +140,11 @@ sub Tokenize {
     }
     if ($position) {
         push @command, "--position";
+    }
+    if ($parsers{$language} eq $srcMlparser) {
+        push @command, "--srcml=$srcmlPath"             if $srcmlPath ne "";
+        push @command, "--srcml2token=$srcml2tokenPath" if $srcml2tokenPath ne "";
+        push @command, "--ctags=$ctagsPath"             if $ctagsPath ne "";
     }
     push @command, $input;
 
