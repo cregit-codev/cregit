@@ -57,6 +57,7 @@ The pipeline steps can be run all at once using script run_pipeline_process.sh. 
 
 Example run with default parameters (used jqlang/jq repository):
 ![Example cregit run](cregit.gif)
+p.s.: gif is sped up.
 
 ### a. Create the view repository
 
