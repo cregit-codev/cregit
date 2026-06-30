@@ -35,7 +35,6 @@ import scalaz._
 import java.text.Normalizer
 
 import info.folone.scala.poi._
-import impure._
 
 import slick.driver.SQLiteDriver.api._
 import java.io.File
@@ -212,6 +211,60 @@ object  unifyPersons {
     }
   }
 
+  // Footer keys that reference people (not metadata like Change-Id)
+  val PERSON_FOOTER_KEYS = Set(
+    "assisted-by",
+    "co-authored-by",
+    "co-developed-by",
+    "reviewed-by",
+    "signed-off-by",
+    "acked-by",
+    "tested-by",
+    "reported-by",
+    "suggested-by",
+    "based-on-patch-by",
+    "helped-by",
+    "mentored-by",
+    "thanks-to"
+  )
+
+  // Parse a footer value like "Name <email>" or "<email>" into (name, email)
+  def parseFooterPerson(value: String): Option[(String, String)] = {
+    val trimmed = value.trim
+    val nameEmail = """^(.+?)\s*<([^>]+)>\s*$""".r
+    val emailOnly = """^\s*<([^>]+)>\s*$""".r
+
+    trimmed match {
+      case nameEmail(name, email) => Some((name.trim, email.trim))
+      case emailOnly(email)       => Some((email.trim, email.trim))
+      case _ if trimmed.contains('@') => Some((trimmed, trimmed))
+      case _ => None
+    }
+  }
+
+  def makeFooterPersonKey(name: String, email: String): String = {
+    val noacc = strip_accents(name)
+    if (noacc.contains(' '))
+      noacc.toLowerCase
+    else (noacc + " at " + email).toLowerCase
+  }
+
+  // Extract footer participants from a single commit
+  def getFooterPersonsFromCommit(l: org.eclipse.jgit.revwalk.RevCommit): Seq[Person] = {
+    l.getFooterLines.asScala
+      .filter(f => PERSON_FOOTER_KEYS.contains(f.getKey.toLowerCase))
+      .flatMap { f =>
+        parseFooterPerson(f.getValue).map { case (name, email) =>
+          val key = makeFooterPersonKey(name, email)
+          val lcEmail = email.toLowerCase
+          val parts = email.split('@')
+          val (user, domain) = if (parts.length > 1) (parts(0), parts(1)) else (parts(0), "")
+          new Person(name, key, email, lcEmail, user.toLowerCase, domain.toLowerCase)
+        }
+      }
+      .toSeq
+  }
+
   // return an iterator that returns, for each commit
   // a tuple of the author  and the committer info
   def git_commits_iterator(git:Git) = {
@@ -252,9 +305,10 @@ object  unifyPersons {
       val authorKey = dealWithSingleWords(authorName, author)
       val commKey = dealWithSingleWords(committerName, committer)
       
-      // tuple to return
+      // tuple to return: (RevCommit, author, committer)
       
       (
+        l,
         new Person(authorName, authorKey, author, author.toLowerCase, aut._1,aut._2),
         new Person(committerName, commKey, committer, committer.toLowerCase, com._1, com._2)
       )
@@ -396,7 +450,9 @@ object  unifyPersons {
 
     val git = Git.open(fileRepo)
     val gitIter = git_commits_iterator(git).toArray
-    val (authors,committers) = gitIter.unzip
+    val authors = gitIter.map(_._2)
+    val committers = gitIter.map(_._3)
+    val revCommits = gitIter.map(_._1)
     println(s"Loaded ${gitIter.size} commits...")
 
     // create a map with the counts of each
@@ -404,9 +460,15 @@ object  unifyPersons {
     val autMap = authors.groupBy(identity).mapValues(_.length)
     val commitMap = committers.groupBy(identity).mapValues(_.length)
 
+    // collect footer participants from all commits
+    val footerPersonList: Seq[Person] = revCommits.flatMap(c => getFooterPersonsFromCommit(c))
+    val footerMap = footerPersonList.groupBy(identity).mapValues(_.length)
 
-    // combine them into a single set
-    val everybody = autMap ++ commitMap.map{ case (k,v) => k -> (v + autMap.getOrElse(k,0)) }
+    // combine them into a single set, adding footer counts
+    val everybodyBase = autMap ++ commitMap.map{ case (k,v) => k -> (v + autMap.getOrElse(k,0)) }
+    val everybody = footerMap.foldLeft(everybodyBase) { case (acc, (k, v)) =>
+      acc + (k -> (acc.getOrElse(k, 0) + v))
+    }
 
     // unify by name
     println("Unifying by name...")

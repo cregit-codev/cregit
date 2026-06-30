@@ -496,7 +496,23 @@ def main():
                 e.emailaddr                   AS person_email,
                 e.domain                      AS person_domain,
 
-                coalesce(m.repo, '')          AS repo_tag
+                coalesce(m.repo, '')          AS repo_tag,
+
+                coalesce(ftr.footer_signed_off_by, [])        AS footer_signed_off_by,
+                coalesce(ftr.footer_co_authored_by, [])      AS footer_co_authored_by,
+                coalesce(ftr.footer_co_developed_by, [])     AS footer_co_developed_by,
+                coalesce(ftr.footer_reviewed_by, [])         AS footer_reviewed_by,
+                coalesce(ftr.footer_acked_by, [])            AS footer_acked_by,
+                coalesce(ftr.footer_tested_by, [])           AS footer_tested_by,
+                coalesce(ftr.footer_reported_by, [])         AS footer_reported_by,
+                coalesce(ftr.footer_suggested_by, [])        AS footer_suggested_by,
+                coalesce(ftr.footer_based_on_patch_by, [])   AS footer_based_on_patch_by,
+                coalesce(ftr.footer_helped_by, [])           AS footer_helped_by,
+                coalesce(ftr.footer_mentored_by, [])         AS footer_mentored_by,
+                coalesce(ftr.footer_assisted_by, [])        AS footer_assisted_by,
+                coalesce(ftr.footer_thanks_to, [])           AS footer_thanks_to,
+                coalesce(ftr.footer_personids, [])           AS footer_personids,
+                coalesce(ftr.footer_person_names, [])        AS footer_person_names
 
             FROM token_map t
             JOIN commits c                ON t.commit_sha = c.cid
@@ -504,6 +520,36 @@ def main():
             LEFT JOIN emails e            ON (c.autname = e.emailname
                                          AND c.autemail = e.emailaddr)
             LEFT JOIN persons p           ON e.personid = p.personid
+            LEFT JOIN (
+                SELECT
+                    f.cid,
+                    list(f.value ORDER BY f.idx) FILTER (WHERE LOWER(f.key) = 'signed-off-by')       AS footer_signed_off_by,
+                    list(f.value ORDER BY f.idx) FILTER (WHERE LOWER(f.key) = 'co-authored-by')      AS footer_co_authored_by,
+                    list(f.value ORDER BY f.idx) FILTER (WHERE LOWER(f.key) = 'co-developed-by')     AS footer_co_developed_by,
+                    list(f.value ORDER BY f.idx) FILTER (WHERE LOWER(f.key) = 'reviewed-by')         AS footer_reviewed_by,
+                    list(f.value ORDER BY f.idx) FILTER (WHERE LOWER(f.key) = 'acked-by')            AS footer_acked_by,
+                    list(f.value ORDER BY f.idx) FILTER (WHERE LOWER(f.key) = 'tested-by')           AS footer_tested_by,
+                    list(f.value ORDER BY f.idx) FILTER (WHERE LOWER(f.key) = 'reported-by')         AS footer_reported_by,
+                    list(f.value ORDER BY f.idx) FILTER (WHERE LOWER(f.key) = 'suggested-by')        AS footer_suggested_by,
+                    list(f.value ORDER BY f.idx) FILTER (WHERE LOWER(f.key) = 'based-on-patch-by')   AS footer_based_on_patch_by,
+                    list(f.value ORDER BY f.idx) FILTER (WHERE LOWER(f.key) = 'helped-by')           AS footer_helped_by,
+                    list(f.value ORDER BY f.idx) FILTER (WHERE LOWER(f.key) = 'mentored-by')         AS footer_mentored_by,
+                    list(f.value ORDER BY f.idx) FILTER (WHERE LOWER(f.key) = 'assisted-by')         AS footer_assisted_by,
+                    list(f.value ORDER BY f.idx) FILTER (WHERE LOWER(f.key) = 'thanks-to')           AS footer_thanks_to,
+                    list(DISTINCT fe.personid ORDER BY fe.personid)
+                        FILTER (WHERE fe.personid IS NOT NULL)                                           AS footer_personids,
+                    list(DISTINCT coalesce(fpn.personname, fe.personid)
+                        ORDER BY coalesce(fpn.personname, fe.personid))
+                        FILTER (WHERE coalesce(fpn.personname, fe.personid) IS NOT NULL)                AS footer_person_names
+                FROM footers f
+                LEFT JOIN emails fe
+                    ON fe.emailaddr = coalesce(
+                        regexp_extract(f.value, '<([^>]+)>', 1),
+                        regexp_extract(f.value, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+[.][A-Za-z]{{2,}}', 1)
+                    )
+                LEFT JOIN persons fpn ON fe.personid = fpn.personid
+                GROUP BY f.cid
+            ) ftr ON c.cid = ftr.cid
 
             ORDER BY t.file_path, t.token_index
         ) TO '{output_path}'
