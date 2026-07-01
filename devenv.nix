@@ -93,7 +93,5 @@ in
   languages.java  = { enable = true; jdk.package = pkgs.jdk21; };
   languages.scala = { enable = true; };
 
-  # Rust toolchain for tokenize/rustTokenizer (the .rs tokenizer).
-  # Default channel (nixpkgs) — avoids needing the rust-overlay input.
   languages.rust.enable = true;
 }
