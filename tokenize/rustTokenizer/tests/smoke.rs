@@ -1,13 +1,21 @@
 // Smoke test: run the built binary on a fixture and check the stream is well-formed.
 
-use std::process::Command;
+use std::process::{Command, Output};
+
+fn bin() -> &'static str {
+    env!("CARGO_BIN_EXE_rust_tokenizer")
+}
+
+// Run the binary with arbitrary args and return the raw Output (for exit-code checks).
+fn run_args(args: &[&str]) -> Output {
+    Command::new(bin())
+        .args(args)
+        .output()
+        .expect("failed to run rust_tokenizer")
+}
 
 fn run(fixture: &str) -> String {
-    let bin = env!("CARGO_BIN_EXE_rust_tokenizer");
-    let out = Command::new(bin)
-        .arg(format!("tests/fixtures/{}", fixture))
-        .output()
-        .expect("failed to run rust_tokenizer");
+    let out = run_args(&[&format!("tests/fixtures/{}", fixture)]);
     assert!(out.status.success(), "binary exited with {}", out.status);
     String::from_utf8(out.stdout).expect("stdout is not utf-8")
 }
@@ -48,12 +56,51 @@ fn edge_cases_classify_correctly() {
 
 #[test]
 fn unicode_identifier_advances_columns_by_code_point_not_byte() {
-    // `café` is 4 chars / 5 bytes. The `(` immediately after must be at col 8 (1+4+space+4),
-    // not col 9 (which we would get if we counted bytes).
+    // `fn café()` is on line 18; `café` is 4 chars / 5 bytes. The `(` must be at col 8
+    // (1 + "fn " + 4 chars), not col 9 — which is what counting bytes would give.
     let s = run("edge_cases.rs");
     assert!(
-        s.contains("19:8\top|("),
+        s.contains("18:8\top|("),
         "expected `(` at col 8 after café, output was:\n{}",
         s
     );
+}
+
+// --- unhappy paths: the binary must report errors with the documented exit codes ---
+
+#[test]
+fn missing_input_file_exits_1() {
+    let out = run_args(&["does/not/exist.rs"]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("cannot read"), "stderr was: {}", err);
+}
+
+#[test]
+fn unknown_option_exits_2() {
+    let out = run_args(&["--bogus", "tests/fixtures/hello.rs"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown option"));
+}
+
+#[test]
+fn extra_positional_argument_exits_2() {
+    let out = run_args(&["tests/fixtures/hello.rs", "tests/fixtures/edge_cases.rs"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("extra positional"));
+}
+
+#[test]
+fn no_path_prints_usage_and_exits_2() {
+    let out = run_args(&[]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Usage"));
+}
+
+#[test]
+fn dispatcher_flags_are_accepted_and_ignored() {
+    // tokenize.pl passes these; the binary must accept them and still succeed
+    let out = run_args(&["--language=Rust", "--position", "--verbose", "tests/fixtures/hello.rs"]);
+    assert!(out.status.success(), "binary exited with {}", out.status);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("\tkeyword|fn"));
 }
