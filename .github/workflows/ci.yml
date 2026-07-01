@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build & test (nix + devenv)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      - name: Set up Cachix (devenv)
+        uses: cachix/cachix-action@v17
+        with:
+          name: devenv
+
+      - name: Install devenv
+        run: nix profile install nixpkgs#devenv
+
+      - name: Cache sbt dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.sbt
+            ~/.ivy2/cache
+            ~/.cache/coursier
+          key: sbt-${{ runner.os }}-${{ hashFiles('**/build.sbt', '**/project/build.properties', '**/project/plugins.sbt') }}
+          restore-keys: |
+            sbt-${{ runner.os }}-
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tokenize/rustTokenizer/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Build blobExec (sbt assembly, Scala 2.13 / JDK 21)
+        run: devenv shell -- bash -c 'cd blobExec && sbt -batch assembly'
+
+      - name: Build & test C++ transcoder (srcml2token)
+        run: devenv shell -- bash -c 'cd tokenize/srcMLtoken && make && make test'
+
+      - name: Build & test Rust tokenizer (rust_tokenizer)
+        run: devenv shell -- bash -c 'cd tokenize/rustTokenizer && make && make test'
+
+      - name: Build legacy onejar modules (sbt one-jar, Scala 2.10 / JDK 8)
+        run: |
+          devenv shell -- bash -c '
+            set -e
+            for m in slickGitLog persons remapCommits; do
+              echo "::group::$m"
+              ( cd "$m" && sbt --java-home "$LEGACY_JAVA_HOME" -batch one-jar )
+              echo "::endgroup::"
+            done'
