@@ -72,6 +72,8 @@ let
     p.SetScalar
     p.TextAutoformat
   ]);
+
+  legacyJdk = pkgs.temurin-bin-8;
 in
 {
   packages = [
@@ -92,6 +94,7 @@ in
   # Scala 2.13 + sbt 1.x needs a modern JDK; the legacy sbt 0.13 hack is gone.
   languages.java  = { enable = true; jdk.package = pkgs.jdk21; };
   languages.scala = { enable = true; };
-
   languages.rust.enable = true;
+
+  env.LEGACY_JAVA_HOME = "${legacyJdk}";
 }
