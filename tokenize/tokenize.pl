@@ -109,6 +109,20 @@ if ($language eq "") {
 
 Usage("filename not specified") if $filename eq "";
 
+# Most parsers are scripts checked into the repo, but the Rust tokenizer is a compiled
+# cargo artifact that may not have been built yet. Check up front and die with an
+# actionable message instead of letting system() fail later with a cryptic
+# "No such file or directory" buried inside "Unable to execute command".
+my $parser = $parsers{$language};
+if (not -e $parser) {
+    if ($language eq "Rust") {
+        die "Rust tokenizer not built: [$parser] does not exist.\n" .
+            "Build it first: cargo build --release --manifest-path $basedir/rustTokenizer/Cargo.toml\n";
+    }
+    die "Parser for language [$language] not found at [$parser]\n";
+}
+die "Parser for language [$language] at [$parser] is not executable\n" if not -x $parser;
+
 
 print STDERR "Tokenize $filename\n" if $verbose;
 
