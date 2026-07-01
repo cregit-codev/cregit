@@ -1,4 +1,3 @@
-// covers tricky lexical cases
 use std::collections::HashMap;
 
 fn lifetimes<'a, 'b: 'a>(s: &'a str) -> &'b str { s }
