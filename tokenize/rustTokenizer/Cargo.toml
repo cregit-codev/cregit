@@ -5,7 +5,8 @@ edition = "2021"
 description = "Rust source tokenizer for the cregit pipeline. Emits tokens with line:col positions in the format consumed by blameRepo and prettyPrint."
 
 [dependencies]
-rustc_lexer = "0.1"
+ra-ap-rustc_lexer = "0.173"
+phf = { version = "0.11", features = ["macros"] }
 
 [[bin]]
 name = "rust_tokenizer"
