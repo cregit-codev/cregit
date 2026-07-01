@@ -93,7 +93,7 @@ in
     pythonEnv
   ];
 
-  # Scala 2.13 + sbt 1.x needs a modern JDK; the legacy sbt 0.13 hack is gone.
-  languages.java  = { enable = true; jdk.package = pkgs.jdk21; };
+  # Legacy sbt 0.13.x needs JDK 17 (Security Manager removed in JDK 18+)
+  languages.java  = { enable = true; jdk.package = pkgs.jdk17; };
   languages.scala = { enable = true; };
 }
