@@ -99,7 +99,7 @@ if ($language eq "") {
     my $ext = lc($1);
     $language = $extensions{$ext};
     Usage("Unknown extension [$ext] in file [$filename]. You must provide language using --language option") unless defined $language and $language ne "";
-    Usage("Unknown parser for extension [$ext] in file [$filename]. You must provide language using --language option") unless defined defined($parsers{language});
+    Usage("Unknown parser for extension [$ext] in file [$filename]. You must provide language using --language option") unless defined($parsers{$language});
 } else {
     # check the extension exists
     if (not (defined $parsers{$language}) or ($parsers{$language} eq "")) {
