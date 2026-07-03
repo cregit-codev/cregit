@@ -139,6 +139,13 @@ object gitLogToDB extends ProgramInfo {
   
   def commitsPerOp = 10000
 
+  def remove_trailing_space(st:String) = st.replaceAll(" $", "")
+
+  def parseGraftLine(l: String): (String, Int, String) = {
+    val f = l.split(' ')
+    (f(1), 1, f(0))
+  }
+
   def git_commits_iterator(git:Git) = {
 
     val logs = git.log.all.call()
@@ -164,8 +171,6 @@ object gitLogToDB extends ProgramInfo {
 
       val aut = l.getAuthorIdent()
       val com = l.getCommitterIdent()
-
-      def remove_trailing_space(st:String) = st.replaceAll(" $", "")
 
       (
         // first is the commit tuple
@@ -205,10 +210,7 @@ object gitLogToDB extends ProgramInfo {
     // we'll see
 
     if ((new File(graftsFileName)).exists) {
-      Source.fromFile(graftsFileName).getLines.map { l =>
-        val f = l.split(' ')
-        (f(1), 1, f(0))
-      }.toList
+      Source.fromFile(graftsFileName).getLines.map(parseGraftLine).toList
     } else {
       List()
     }
