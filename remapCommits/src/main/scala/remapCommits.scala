@@ -69,33 +69,36 @@ object remapCommits extends ProgramInfo {
   
   def commitsPerOp = 10000
 
+  def extractOriginalCid(cid: String, message: String): String = {
+
+    val lastline =
+      // split returns empty list if the string contains
+      // only separators. Weird.
+      try {
+        message.split("\n").last
+      } catch {
+        case _: Exception => ""
+      }
+
+    val exp = "Former-commit-id: ([0-9a-f]{40})".r
+
+    lastline match {
+      case exp(fcid) => fcid
+      case _ => cid
+    }
+  }
+
   def git_commits_iterator(git:Git) = {
 
     val logs = git.log.all.call()
 
     val logsIt = logs.asScala.toIterator
-    
+
     val mapped = logsIt.map { l =>
 
       val cid = l.getName
 
-      val message = l.getFullMessage()
-
-      val lastline =
-        // split returns empty list if the string contains
-        // only separators. Weird.
-        try {
-          message.split("\n").last
-        } catch {
-          case _: Exception => ""
-        }
-
-      val exp = "Former-commit-id: ([0-9a-f]{40})".r
-
-      val originalcid = lastline match {
-        case exp(fcid) => fcid
-        case _ => cid
-      }
+      val originalcid = extractOriginalCid(cid, l.getFullMessage())
 
       (// must return 3 elements, because that is what the database expects
         cid, originalcid, null
