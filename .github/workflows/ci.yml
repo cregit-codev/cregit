@@ -56,8 +56,8 @@ jobs:
           restore-keys: |
             cargo-${{ runner.os }}-
 
-      - name: Build blobExec (sbt assembly, Scala 2.13 / JDK 21)
-        run: devenv shell -- bash -c 'cd blobExec && sbt -batch assembly'
+      - name: Build & test blobExec (sbt test assembly, Scala 2.13 / JDK 21)
+        run: devenv shell -- bash -c 'cd blobExec && sbt -batch test assembly'
 
       - name: Build & test C++ transcoder (srcml2token)
         run: devenv shell -- bash -c 'cd tokenize/srcMLtoken && make && make test'
@@ -65,12 +65,15 @@ jobs:
       - name: Build & test Rust tokenizer (rust_tokenizer)
         run: devenv shell -- bash -c 'cd tokenize/rustTokenizer && make && make test'
 
-      - name: Build legacy onejar modules (sbt one-jar, Scala 2.10 / JDK 8)
+      - name: Perl tests (prove)
+        run: devenv shell -- bash -c 'prove tokenize/t tokenizeByBlobId/t blameRepo/t prettyPrint/t'
+
+      - name: Build & test legacy onejar modules (sbt test one-jar, Scala 2.10 / JDK 8)
         run: |
           devenv shell -- bash -c '
             set -e
             for m in slickGitLog persons remapCommits; do
               echo "::group::$m"
-              ( cd "$m" && sbt --java-home "$LEGACY_JAVA_HOME" -batch one-jar )
+              ( cd "$m" && sbt --java-home "$LEGACY_JAVA_HOME" -batch test one-jar )
               echo "::endgroup::"
             done'
