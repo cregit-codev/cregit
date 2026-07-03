@@ -1,0 +1,76 @@
+#!/usr/bin/env perl
+
+# Tests for blameRepoFiles.pl: walks `git ls-files`, filters by regexp and
+# runs formatBlame.pl per file, skipping files whose .blame already exists.
+
+use strict;
+use warnings;
+use Test::More tests => 9;
+use FindBin;
+use File::Temp qw(tempdir);
+
+my $script  = "$FindBin::Bin/../blameRepoFiles.pl";
+my $workdir = tempdir(CLEANUP => 1);
+
+# deterministic, hermetic git
+$ENV{GIT_CONFIG_NOSYSTEM} = 1;
+$ENV{GIT_CONFIG_GLOBAL}   = '/dev/null';
+$ENV{GIT_AUTHOR_DATE}     = '2020-01-01T00:00:00 +0000';
+$ENV{GIT_COMMITTER_DATE}  = '2020-01-01T00:00:00 +0000';
+$ENV{GIT_AUTHOR_NAME}     = 'Alice';
+$ENV{GIT_AUTHOR_EMAIL}    = 'alice@example.com';
+$ENV{GIT_COMMITTER_NAME}  = 'Alice';
+$ENV{GIT_COMMITTER_EMAIL} = 'alice@example.com';
+
+sub git {
+    my ($repo, @args) = @_;
+    my $cmd = "git -C '$repo' " . join(' ', @args);
+    system($cmd) == 0 or die "git failed: $cmd";
+}
+
+sub write_file {
+    my ($path, $content) = @_;
+    open(my $fh, '>', $path) or die $!;
+    print $fh $content;
+    close $fh;
+}
+
+# fixture: two .c files and one .txt file in a single commit
+my $repo = "$workdir/repo";
+mkdir $repo or die $!;
+git($repo, "init -q -b main");
+write_file("$repo/a.c", "int a;\n");
+write_file("$repo/b.c", "int b;\n");
+write_file("$repo/notes.txt", "hello\n");
+git($repo, "add .");
+git($repo, "commit -q -m first");
+
+my $out = "$workdir/blame-out";
+mkdir $out or die $!;
+
+# first pass: both .c files processed, .txt filtered out
+{
+    my $stdout = `perl '$script' '$repo' '$out' '\\.c\$' 2>'$workdir/stderr'`;
+    is($?, 0, "blameRepoFiles.pl succeeds");
+    ok(-f "$out/a.c.blame", "a.c.blame created");
+    ok(-f "$out/b.c.blame", "b.c.blame created");
+    ok(!-e "$out/notes.txt.blame", "notes.txt is filtered out by the regexp");
+    like($stdout, qr/Newly processed \[2\] Already done \[0\] files Error \[0\]/,
+         "summary reports two newly processed files");
+}
+
+# second pass without --overwrite: everything is already done
+{
+    my $stdout = `perl '$script' '$repo' '$out' '\\.c\$' 2>/dev/null`;
+    is($?, 0, "second run succeeds");
+    like($stdout, qr/Newly processed \[0\] Already done \[2\] files Error \[0\]/,
+         "existing .blame files are skipped");
+}
+
+# --overwrite reprocesses everything
+{
+    my $stdout = `perl '$script' --overwrite '$repo' '$out' '\\.c\$' 2>/dev/null`;
+    is($?, 0, "overwrite run succeeds");
+    like($stdout, qr/Newly processed \[2\] Already done \[0\] files Error \[0\]/,
+         "--overwrite reprocesses the files");
+}
