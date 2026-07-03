@@ -212,6 +212,43 @@ object  unifyPersons {
     }
   }
 
+  def splitEmail(st:String) = {
+    val fields = st.split('@')
+    if (fields.size > 1) {
+      (fields(0), fields(1))
+    } else {
+      (fields(0), "")
+    }
+
+  }
+
+  def dealWithSingleWords(key:String, addon: String)= {
+    // we don't like names that don't have spaces
+    // since they are usually reused (eg. Jim, root, etc)
+    // so instead, use the other field
+    val noacc = strip_accents(key)
+    if (noacc.contains(' '))
+      noacc.toLowerCase
+    else (noacc+" at " +addon).toLowerCase
+  }
+
+  // unify by common email: merge groups of persons that share at least one
+  // lowercased email, transitively
+  def unifyByEmail(setsNames: Iterable[Iterable[Person]]): Set[Set[Person]] = {
+    setsNames.foldLeft(Set.empty[Set[Person]])((cum, curi) => {
+      val cur = curi.toSet
+      val curEmails = cur.map{_.lcEmail}
+      val (hasCommon, rest) = cum.partition(_.map{_.lcEmail} & curEmails nonEmpty)
+      rest + (cur ++ hasCommon.flatten)
+    })
+  }
+
+  // we prefer names that contain a space (single words are usually
+  // reused, e.g. Jim, root); otherwise fall back to the email
+  def preferredName(v: List[Person]): String = {
+    if (v(0).name.contains(" ")) v(0).name else v(0).email
+  }
+
   // return an iterator that returns, for each commit
   // a tuple of the author  and the committer info
   def git_commits_iterator(git:Git) = {
@@ -219,16 +256,6 @@ object  unifyPersons {
     val logs = git.log.all.call()
 
     val logsIt = logs.asScala.toIterator
-
-    def splitEmail(st:String) = {
-      val fields = st.split('@')
-      if (fields.size > 1) {
-        (fields(0), fields(1))
-      } else {
-        (fields(0), "")
-      }
-
-    }
 
     logsIt.map { l =>
       val author = l.getAuthorIdent().getEmailAddress
@@ -238,16 +265,6 @@ object  unifyPersons {
 
       val authorName = l.getAuthorIdent().getName
       val committerName = l.getCommitterIdent().getName
-
-      def dealWithSingleWords(key:String, addon: String)= {
-        // we don't like names that don't have spaces
-        // since they are usually reused (eg. Jim, root, etc)
-        // so instead, use the other field
-        val noacc = strip_accents(key)
-        if (noacc.contains(' '))
-          noacc.toLowerCase
-        else (noacc+" at " +addon).toLowerCase
-      }
 
       val authorKey = dealWithSingleWords(authorName, author)
       val commKey = dealWithSingleWords(committerName, committer)
@@ -426,12 +443,7 @@ object  unifyPersons {
     println("Unifying by email...")
 
     // unify by common email
-    val unifiedByEmail = setsNames.foldLeft(Set.empty[Set[Person]])((cum, curi) => {
-      val cur = curi.toSet
-      val curEmails = cur.map{_.lcEmail}
-      val (hasCommon, rest) = cum.partition(_.map{_.lcEmail} & curEmails nonEmpty)
-      rest + (cur ++ hasCommon.flatten)
-    })
+    val unifiedByEmail = unifyByEmail(setsNames)
 
     println(s"    ... reduced to ${unifiedByEmail.size} emails")
 
@@ -455,7 +467,7 @@ object  unifyPersons {
     // attach the count of all, authored, committed
 
     val keys = mapByKey.map{ case (k,v) =>
-      val nameToUse = if (v(0).name.contains(" ")) v(0).name else v(0).email
+      val nameToUse = preferredName(v)
       val identCount = v.size
       val countAll = v.map{ e =>
         (everybody(e),
