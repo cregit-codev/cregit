@@ -7,7 +7,8 @@ libraryDependencies ++= Seq(
   "org.xerial" % "sqlite-jdbc" % "3.45.3.0",
   "com.zaxxer" % "HikariCP" % "2.4.1",
   "org.eclipse.jgit" % "org.eclipse.jgit" % "4.6.0.201612231935-r",
-  "info.folone" %% "poi-scala" % "0.18"
+  "info.folone" %% "poi-scala" % "0.18",
+  "org.scalatest" %% "scalatest" % "3.0.8" % "test"
 )
 
 resolvers ++= Seq(
