@@ -2,6 +2,14 @@
 
 Thanks for contributing to `cregit`!
 
+This repository is the `cregit-codev` fork of the original
+`cregit` project.
+
+When relevant, please keep changes compatible with the upstream
+project and reference the original repository:
+
+https://github.com/cregit/cregit
+
 ## Before you open a pull request
 
 For _large changes_, please _open an issue first_ to discuss the proposal.
