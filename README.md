@@ -2,6 +2,14 @@
 
 ![Cregit logo](./logos/cregit.png)
 
+## About
+
+This repository is the `cregit-codev` fork of the original `cregit`
+project.
+
+The original upstream repository is available at
+https://github.com/cregit/cregit.
+
 ## Preliminaries
 
 - Code is written in Scala, C++ and Perl.
@@ -10,10 +18,10 @@
 
 ## Prerequisites
 
-| | | | 
-|-|-|-|
-| srcml | https://www.srcml.org/              | Make sure srcml is in path |
-| ctags | https://github.com/universal-ctags  | Make sure ctags is in path |
+|       |                                    |                            |
+| ----- | ---------------------------------- | -------------------------- |
+| srcml | https://www.srcml.org/             | Make sure srcml is in path |
+| ctags | https://github.com/universal-ctags | Make sure ctags is in path |
 
 The tokenization step is now provided by the [blobExec](./blobExec) sbt module
 (consumes upstream `com.madgag:bfg-library` from Maven Central). It replaces the
@@ -63,8 +71,8 @@ p.s.: gif is sped up.
 
 To tokenize the files we require to create some environment variables to communicate with the tokenizing script:
 
-| | |
-|-|-|
+|                    |                                                      |
+| ------------------ | ---------------------------------------------------- |
 | `BFG_MEMO_DIR`     | directory to use for memoization of tokenized files  |
 | `BFG_TOKENIZE_CMD` | command to use to tokenize, might include parameters |
 
