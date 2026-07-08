@@ -10,10 +10,10 @@
 
 ## Prerequisites
 
-| | | | 
-|-|-|-|
-| srcml | https://www.srcml.org/              | Make sure srcml is in path |
-| ctags | https://github.com/universal-ctags  | Make sure ctags is in path |
+|       |                                    |                            |
+| ----- | ---------------------------------- | -------------------------- |
+| srcml | https://www.srcml.org/             | Make sure srcml is in path |
+| ctags | https://github.com/universal-ctags | Make sure ctags is in path |
 
 The tokenization step is now provided by the [blobExec](./blobExec) sbt module
 (consumes upstream `com.madgag:bfg-library` from Maven Central). It replaces the
@@ -53,7 +53,20 @@ This is the workflow to process a git repository with cregit, and to generate th
 
 ### Observation
 
-The pipeline steps can be run all at once using script run_pipeline_process.sh. Use run_pipeline_process.sh --help command for showing options.
+The entire pipeline can be executed with:
+
+```sh
+./run_pipeline_process.sh
+```
+
+By default, the script starts from step 1 and executes the complete pipeline.
+
+To resume the pipeline from a specific step, pass the step number as the first
+argument. For example, to resume from step 5:
+
+```sh
+./run_pipeline_process.sh 5
+```
 
 Example run with default parameters (used jqlang/jq repository):
 ![Example cregit run](cregit.gif)
@@ -63,8 +76,8 @@ p.s.: gif is sped up.
 
 To tokenize the files we require to create some environment variables to communicate with the tokenizing script:
 
-| | |
-|-|-|
+|                    |                                                      |
+| ------------------ | ---------------------------------------------------- |
 | `BFG_MEMO_DIR`     | directory to use for memoization of tokenized files  |
 | `BFG_TOKENIZE_CMD` | command to use to tokenize, might include parameters |
 
