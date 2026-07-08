@@ -2,6 +2,14 @@
 
 ![Cregit logo](./logos/cregit.png)
 
+## About
+
+This repository is the `cregit-codev` fork of the original `cregit`
+project.
+
+The original upstream repository is available at
+https://github.com/cregit/cregit.
+
 ## Preliminaries
 
 - Code is written in Scala, C++ and Perl.
