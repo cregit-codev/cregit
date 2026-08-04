@@ -23,6 +23,7 @@ import org.eclipse.jgit.lib.PersonIdent
 import java.io.File
 import java.io.PrintWriter
 import java.nio.file.Files
+import java.sql.DriverManager
 import java.text.SimpleDateFormat
 import java.util.{Date, TimeZone}
 
@@ -155,6 +156,51 @@ class gitLogToDbSpec extends FunSuite {
   test("isBare is false for a working-tree repo") {
     withTempRepo { (git, dir) =>
       assert(gitLogToDB.isBare(git) === false)
+    }
+  }
+
+  test("main writes the complete commit metadata schema to SQLite") {
+    withTempRepo { (git, dir) =>
+      val c1 = commitFile(git, dir, "a.txt", "one\n", alice, "first commit")
+      val c2 = commitFile(
+        git,
+        dir,
+        "b.txt",
+        "two\n",
+        bob,
+        "second commit\n\nSigned-off-by: Bob Hacker <bob@example.com>\n")
+      val dbFile = new File(dir, "history.db")
+
+      gitLogToDB.main(Array(dbFile.getPath, dir.getPath))
+
+      Class.forName("org.sqlite.JDBC")
+      val connection = DriverManager.getConnection("jdbc:sqlite:" + dbFile.getPath)
+      try {
+        def intQuery(sql: String): Int = {
+          val statement = connection.createStatement()
+          try {
+            val rows = statement.executeQuery(sql)
+            try { rows.next(); rows.getInt(1) } finally rows.close()
+          } finally statement.close()
+        }
+
+        def stringQuery(sql: String, parameter: String): String = {
+          val statement = connection.prepareStatement(sql)
+          try {
+            statement.setString(1, parameter)
+            val rows = statement.executeQuery()
+            try { assert(rows.next()); rows.getString(1) } finally rows.close()
+          } finally statement.close()
+        }
+
+        assert(intQuery("select count(*) from commits") === 2)
+        assert(intQuery("select count(*) from parents") === 1)
+        assert(intQuery("select count(*) from logs") === 2)
+        assert(intQuery("select count(*) from footers") === 1)
+        assert(stringQuery("select summary from commits where cid = ?", c2.getName) === "second commit")
+        assert(stringQuery("select parent from parents where cid = ?", c2.getName) === c1.getName)
+        assert(stringQuery("select log from logs where cid = ?", c2.getName).contains("Signed-off-by"))
+      } finally connection.close()
     }
   }
 }

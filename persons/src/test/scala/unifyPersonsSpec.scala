@@ -18,6 +18,14 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 import org.scalatest.FunSuite
 import unifyPersons.Person
 
+import org.eclipse.jgit.api.Git
+import org.eclipse.jgit.lib.PersonIdent
+
+import java.io.{File, PrintWriter}
+import java.nio.file.Files
+import java.sql.DriverManager
+import java.util.{Date, TimeZone}
+
 class unifyPersonsSpec extends FunSuite {
 
   def mkPerson(name: String, email: String): Person = {
@@ -135,5 +143,88 @@ class unifyPersonsSpec extends FunSuite {
     val single = mkPerson("root", "root@example.com")
     val full = mkPerson("Rudy Root", "rudy@example.com")
     assert(unifyPersons.preferredName(List(single, full)) === "root@example.com")
+  }
+
+  def withTempRepo(testCode: (Git, File) => Unit): Unit = {
+    val dir = Files.createTempDirectory("unifyPersonsSpec").toFile
+    val git = Git.init.setDirectory(dir).call()
+    try {
+      testCode(git, dir)
+    } finally {
+      git.close()
+      def rm(file: File): Unit = {
+        if (file.isDirectory) file.listFiles.foreach(rm)
+        file.delete()
+      }
+      rm(dir)
+    }
+  }
+
+  def commitFile(
+    git: Git,
+    dir: File,
+    name: String,
+    content: String,
+    who: PersonIdent,
+    message: String) = {
+    val out = new PrintWriter(new File(dir, name))
+    out.print(content)
+    out.close()
+    git.add.addFilepattern(name).call()
+    git.commit.setAuthor(who).setCommitter(who).setMessage(message).call()
+  }
+
+  test("main writes the identity spreadsheet and persons database") {
+    withTempRepo { (git, dir) =>
+      val utc = TimeZone.getTimeZone("UTC")
+      val alice = new PersonIdent(
+        "Alice Coder",
+        "alice@example.com",
+        new Date(1500000000000L),
+        utc)
+      val bob = new PersonIdent(
+        "Bob Hacker",
+        "bob@example.com",
+        new Date(1500000600000L),
+        utc)
+      commitFile(git, dir, "a.txt", "one\n", alice, "first")
+      commitFile(git, dir, "b.txt", "two\n", bob, "second")
+
+      val spreadsheet = new File(dir, "persons.xls")
+      val database = new File(dir, "persons.db")
+      unifyPersons.main(Array(dir.getPath, spreadsheet.getPath, database.getPath))
+
+      assert(spreadsheet.isFile)
+      assert(spreadsheet.length() > 0)
+      assert(database.isFile)
+
+      Class.forName("org.sqlite.JDBC")
+      val connection = DriverManager.getConnection("jdbc:sqlite:" + database.getPath)
+      try {
+        def intQuery(sql: String): Int = {
+          val statement = connection.createStatement()
+          try {
+            val rows = statement.executeQuery(sql)
+            try { rows.next(); rows.getInt(1) } finally rows.close()
+          } finally statement.close()
+        }
+
+        val statement = connection.prepareStatement(
+          "select autcount, comcount from emails where emailaddr = ?")
+        try {
+          statement.setString(1, "alice@example.com")
+          val rows = statement.executeQuery()
+          try {
+            assert(rows.next())
+            assert(rows.getInt(1) === 1)
+            assert(rows.getInt(2) === 1)
+          } finally rows.close()
+        } finally statement.close()
+
+        assert(intQuery("select count(*) from emails") === 2)
+        assert(intQuery("select count(*) from persons") === 2)
+        assert(intQuery("select count(*) from persons where personid = 'alice coder'") === 1)
+      } finally connection.close()
+    }
   }
 }
