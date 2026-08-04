@@ -12,6 +12,7 @@ my $s = <>;
 my @tokens = split(/\s+/, $s);
 
 for my $t (@tokens) {
+    next if $t eq "";
     if ($t =~ /[(\[\]\)]/) {
 #        print "++++$t+++++\n";
         my @subst = split(/([(\[\]\)])/, $t);
@@ -23,5 +24,4 @@ for my $t (@tokens) {
         print $t . "\n";
     } 
 }
-
 
