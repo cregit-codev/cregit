@@ -52,6 +52,29 @@ Use `make` to compile [srcMLtoken](./tokenize/srcMLtoken).
 
 Perl scripts can be run without compilation.
 
+## How to test
+
+Run the test suites inside the pinned development environment (`devenv shell`).
+The commands below mirror the required checks in GitHub Actions:
+
+```sh
+cd blobExec && sbt -batch test assembly
+
+cd ../tokenize/srcMLtoken && make && make test
+cd ../rustTokenizer && make && make test
+
+cd ../..
+prove tokenize/t tokenizeByBlobId/t blameRepo/t prettyPrint/t
+
+for module in slickGitLog persons remapCommits; do
+  (cd "$module" && sbt --java-home "$LEGACY_JAVA_HOME" -batch test one-jar)
+done
+```
+
+The Perl tests create temporary Git repositories and SQLite databases. The
+`tokenizeSrcMl` tests require `srcml2token`, so build the C++ tokenizer before
+running `prove`.
+
 ## How to use
 
 This is the workflow to process a git repository with cregit, and to generate the HTML views of its contributions.
