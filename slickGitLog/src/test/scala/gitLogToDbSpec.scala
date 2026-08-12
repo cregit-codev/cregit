@@ -1,20 +1,3 @@
-/*
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
-*/
-
 import org.scalatest.FunSuite
 
 import org.eclipse.jgit.api.Git
@@ -32,9 +15,7 @@ class gitLogToDbSpec extends FunSuite {
   test("remove_trailing_space strips exactly one trailing space") {
     assert(gitLogToDB.remove_trailing_space("Bob ") === "Bob")
     assert(gitLogToDB.remove_trailing_space("Bob") === "Bob")
-    // regex is " $": only the last space is removed
     assert(gitLogToDB.remove_trailing_space("Bob  ") === "Bob ")
-    // inner spaces are kept
     assert(gitLogToDB.remove_trailing_space("Bob Smith") === "Bob Smith")
   }
 
@@ -43,8 +24,6 @@ class gitLogToDbSpec extends FunSuite {
     val parent = "p" * 40
     assert(gitLogToDB.parseGraftLine(s"$child $parent") === (parent, 1, child))
   }
-
-  // --- fixture helpers -----------------------------------------------------
 
   def withTempRepo(testCode: (Git, File) => Unit): Unit = {
     val dir = Files.createTempDirectory("gitLogToDbSpec").toFile
@@ -73,11 +52,8 @@ class gitLogToDbSpec extends FunSuite {
   val utc = TimeZone.getTimeZone("UTC")
   val aliceDate = new Date(1500000000000L)
   val bobDate = new Date(1500000600000L)
-  // author name with a trailing space, to exercise remove_trailing_space
   val alice = new PersonIdent("Alice Coder ", "alice@example.com", aliceDate, utc)
   val bob = new PersonIdent("Bob Hacker", "bob@example.com", bobDate, utc)
-
-  // -------------------------------------------------------------------------
 
   test("git_commits_iterator maps commits to the expected tuples") {
     withTempRepo { (git, dir) =>
@@ -86,16 +62,14 @@ class gitLogToDbSpec extends FunSuite {
         "second commit\n\nSigned-off-by: Bob Hacker <bob@example.com>\n")
 
       val windows = gitLogToDB.git_commits_iterator(git).toList
-      assert(windows.size === 1) // 2 commits fit in one window of commitsPerOp
+      assert(windows.size === 1)
 
-      val commits = windows(0).sortBy(_._1._4) // order by author date
+      val commits = windows(0).sortBy(_._1._4)
       assert(commits.size === 2)
 
       val (commit1, log1, parents1, footers1) = commits(0)
       val (commit2, log2, parents2, footers2) = commits(1)
 
-      // expected dates computed with the same formatter over the same Date,
-      // so the assertion is immune to the JVM default timezone
       val dt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
 
       assert(commit1 === (c1.getName,
@@ -127,7 +101,7 @@ class gitLogToDbSpec extends FunSuite {
       val all = gitLogToDB.git_commits_iterator(git).toList.flatten
       val mergeTuple = all.find(_._1._1 == merge.getName).get
 
-      assert(mergeTuple._1._9 === true) // ismerge
+      assert(mergeTuple._1._9 === true)
       assert(mergeTuple._3 === Seq(
         (merge.getName, 0, main.getName),
         (merge.getName, 1, side.getName)))
