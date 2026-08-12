@@ -223,17 +223,12 @@ object  unifyPersons {
   }
 
   def dealWithSingleWords(key:String, addon: String)= {
-    // we don't like names that don't have spaces
-    // since they are usually reused (eg. Jim, root, etc)
-    // so instead, use the other field
     val noacc = strip_accents(key)
     if (noacc.contains(' '))
       noacc.toLowerCase
     else (noacc+" at " +addon).toLowerCase
   }
 
-  // unify by common email: merge groups of persons that share at least one
-  // lowercased email, transitively
   def unifyByEmail(setsNames: Iterable[Iterable[Person]]): Set[Set[Person]] = {
     setsNames.foldLeft(Set.empty[Set[Person]])((cum, curi) => {
       val cur = curi.toSet
@@ -243,8 +238,6 @@ object  unifyPersons {
     })
   }
 
-  // we prefer names that contain a space (single words are usually
-  // reused, e.g. Jim, root); otherwise fall back to the email
   def preferredName(v: List[Person]): String = {
     if (v(0).name.contains(" ")) v(0).name else v(0).email
   }

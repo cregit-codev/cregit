@@ -72,8 +72,6 @@ object remapCommits extends ProgramInfo {
   def extractOriginalCid(cid: String, message: String): String = {
 
     val lastline =
-      // split returns empty list if the string contains
-      // only separators. Weird.
       try {
         message.split("\n").last
       } catch {

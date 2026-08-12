@@ -1,23 +1,5 @@
 #!/usr/bin/env perl
 
-# Golden-file tests for tokenizeSrcMl.pl, mirroring the srcMLtoken pattern:
-# run the tokenizer over committed fixtures and compare against t/expected/.
-#
-# Requires srcml and ctags on PATH and tokenize/srcMLtoken/srcml2token built
-# (cd tokenize/srcMLtoken && make); skipped otherwise.
-#
-# To regenerate the goldens after an intentional output change, run inside
-# the devenv shell, from the repo root:
-#   perl tokenize/tokenizeSrcMl.pl --ctags=ctags \
-#     --srcml2token=$PWD/tokenize/srcMLtoken/srcml2token \
-#     --position tokenize/srcMLtoken/tests/main.c tokenize/t/expected/main.c.token
-#   perl tokenize/tokenizeSrcMl.pl --ctags=ctags \
-#     --srcml2token=$PWD/tokenize/srcMLtoken/srcml2token \
-#     tokenize/srcMLtoken/tests/main.c tokenize/t/expected/main.c.nopos.token
-#   perl tokenize/tokenizeSrcMl.pl --ctags=ctags \
-#     --srcml2token=$PWD/tokenize/srcMLtoken/srcml2token \
-#     --position tokenize/srcMLtoken/tests/StringUtil.java tokenize/t/expected/StringUtil.java.token
-
 use strict;
 use warnings;
 use Test::More;
@@ -48,7 +30,6 @@ sub slurp {
     return defined $content ? $content : '';
 }
 
-# returns (exit status, stdout, stderr)
 sub run_tokenizer {
     my (@args) = @_;
     my $out = "$workdir/stdout";
@@ -58,7 +39,6 @@ sub run_tokenizer {
     return ($status, slurp($out), slurp($err));
 }
 
-# C fixture, with token positions
 {
     my ($status, $out, $err) = run_tokenizer("--position", "'$fixtures/main.c'");
     is($status, 0, "tokenizing main.c with --position succeeds");
@@ -66,7 +46,6 @@ sub run_tokenizer {
        "main.c --position output matches the golden file");
 }
 
-# C fixture, without positions
 {
     my ($status, $out, $err) = run_tokenizer("'$fixtures/main.c'");
     is($status, 0, "tokenizing main.c without --position succeeds");
@@ -74,7 +53,6 @@ sub run_tokenizer {
        "main.c output matches the golden file");
 }
 
-# Java fixture (language autodetected from the .java extension)
 {
     my ($status, $out, $err) = run_tokenizer("--position", "'$fixtures/StringUtil.java'");
     is($status, 0, "tokenizing StringUtil.java succeeds");
@@ -82,7 +60,6 @@ sub run_tokenizer {
        "StringUtil.java output matches the golden file");
 }
 
-# unknown extension without --language is an error
 {
     my $bogus = "$workdir/mystery.xyz";
     open(my $fh, '>', $bogus) or die $!;

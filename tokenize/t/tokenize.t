@@ -1,10 +1,5 @@
 #!/usr/bin/env perl
 
-# Tests for the tokenize.pl language dispatcher. It forwards to
-# tokenizeSrcMl.pl (run with its built-in defaults, which is also how the
-# dispatcher runs in production), so its output must be byte-identical to
-# calling tokenizeSrcMl.pl directly with the same flags.
-
 use strict;
 use warnings;
 use Test::More;
@@ -32,7 +27,6 @@ sub slurp {
     return defined $content ? $content : '';
 }
 
-# returns (exit status, stdout, stderr)
 sub run_script {
     my ($script, @args) = @_;
     my $out = "$workdir/stdout";
@@ -41,8 +35,6 @@ sub run_script {
     return ($status, slurp($out), slurp($err));
 }
 
-# dispatch by explicit --language forwards flags and produces the same
-# output as running tokenizeSrcMl.pl directly
 {
     my ($dstatus, $dout) = run_script($dispatcher, "--language=C", "--position", "'$fixtures/main.c'");
     my ($sstatus, $sout) = run_script($direct, "--language=C", "--position", "'$fixtures/main.c'");
@@ -51,7 +43,6 @@ sub run_script {
     is($dout, $sout, "dispatcher output is byte-identical to the direct run");
 }
 
-# language autodetection from the file extension picks the same parser
 {
     my ($astatus, $aout) = run_script($dispatcher, "--position", "'$fixtures/main.c'");
     my ($estatus, $eout) = run_script($dispatcher, "--language=C", "--position", "'$fixtures/main.c'");
@@ -59,7 +50,6 @@ sub run_script {
     is($aout, $eout, "autodetected output matches the explicit --language=C run");
 }
 
-# unknown --language is rejected
 {
     my ($status, $out, $err) = run_script($dispatcher, "--language=Nope", "'$fixtures/main.c'");
     isnt($status, 0, "unknown --language exits non-zero");

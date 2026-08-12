@@ -1,9 +1,5 @@
 #!/usr/bin/env perl
 
-# Tests for formatBlame.pl: builds a small git repo on the fly (deterministic
-# via GIT_AUTHOR_*/GIT_COMMITTER_* env vars) and checks the .blame output
-# format: one line per source line, "<cid>;<filename-if-renamed>;\t<source>".
-
 use strict;
 use warnings;
 use Test::More tests => 12;
@@ -13,7 +9,6 @@ use File::Temp qw(tempdir);
 my $script  = "$FindBin::Bin/../formatBlame.pl";
 my $workdir = tempdir(CLEANUP => 1);
 
-# deterministic, hermetic git
 $ENV{GIT_CONFIG_NOSYSTEM} = 1;
 $ENV{GIT_CONFIG_GLOBAL}   = '/dev/null';
 $ENV{GIT_AUTHOR_DATE}     = '2020-01-01T00:00:00 +0000';
@@ -53,7 +48,6 @@ sub slurp_lines {
     return @lines;
 }
 
-# fixture: commit 1 (Alice) writes two lines, commit 2 (Bob) appends a third
 my $repo = "$workdir/repo";
 mkdir $repo or die $!;
 git($repo, "init -q -b main");
@@ -64,7 +58,6 @@ write_file("$repo/f.c", "int one;\nint two;\nint three;\n");
 git($repo, "add f.c");
 my $cid2 = commit_as($repo, "Bob", "second");
 
-# basic blame formatting
 {
     my $dest = tempdir(CLEANUP => 1);
     my $status = system("perl '$script' '$repo' f.c '$dest' 2>'$workdir/stderr'");
@@ -78,7 +71,6 @@ my $cid2 = commit_as($repo, "Bob", "second");
     is($lines[2], "$cid2;;\tint three;", "line 3 blamed on the second commit");
 }
 
-# a custom --blameExtension is honored
 {
     my $dest = tempdir(CLEANUP => 1);
     my $status = system("perl '$script' --blameExtension=.tok '$repo' f.c '$dest' 2>/dev/null");
@@ -86,7 +78,6 @@ my $cid2 = commit_as($repo, "Bob", "second");
     ok(-f "$dest/f.c.tok", "creates <dest>/f.c.tok");
 }
 
-# after a rename, lines blamed on pre-rename commits carry the old filename
 {
     git($repo, "mv f.c g.c");
     my $cid3 = commit_as($repo, "Alice", "rename");
