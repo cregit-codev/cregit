@@ -39,7 +39,7 @@ import impure._
 
 import slick.driver.SQLiteDriver.api._
 import java.io.File
-import java.util.Calendar 
+import java.util.{Calendar, Locale}
 
 
 object  unifyPersons {
@@ -196,7 +196,14 @@ object  unifyPersons {
 
     override def equals(that: Any): Boolean =
       that match {
-        case that: Person => that.canEqual(this) && this.hashCode == that.hashCode
+        case that: Person =>
+          that.canEqual(this) &&
+          name == that.name &&
+          key == that.key &&
+          email == that.email &&
+          lcEmail == that.lcEmail &&
+          lcUserId == that.lcUserId &&
+          lcDomain == that.lcDomain
         case _ => false
       }
     override def hashCode:Int = {
@@ -213,11 +220,11 @@ object  unifyPersons {
   }
 
   def splitEmail(st:String) = {
-    val fields = st.split('@')
+    val fields = st.split("@", 2)
     if (fields.size > 1) {
-      (fields(0), fields(1))
+      (fields(0).toLowerCase(Locale.ROOT), fields(1).toLowerCase(Locale.ROOT))
     } else {
-      (fields(0), "")
+      (fields(0).toLowerCase(Locale.ROOT), "")
     }
 
   }
@@ -289,8 +296,8 @@ object  unifyPersons {
       Row(index) {
         Set(
           StringCell(0,key),
-          StringCell(1,p.name),
-          StringCell(2,p.key),
+          StringCell(1,p.key),
+          StringCell(2,p.name),
           StringCell(3,p.email),
           StringCell(4,p.lcUserId),
           StringCell(5,p.lcDomain),

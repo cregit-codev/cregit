@@ -137,8 +137,17 @@ if (-f $filename) {
       print $_;
       print $fout $_;
   }
-  close PROC;
-  close $fout;
+  my $tokenizeSucceeded = close PROC;
+  my $tokenizeStatus = $?;
+  close $fout or die "unable to close temporary tokenizer output [$outfile]: $!";
+
+  if (not $tokenizeSucceeded) {
+      unlink($outfile);
+      unlink($file);
+      my $exitCode = $tokenizeStatus == -1 ? -1 : $tokenizeStatus >> 8;
+      die "tokenize command failed with exit code [$exitCode] [$tokenizeCmd]";
+  }
+
   if (not -d $dir) {
       make_path($dir);
   }

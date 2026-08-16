@@ -104,6 +104,7 @@ while (<FILES>) {
 }
 
 print "Newly processed [$count] Already done [$alreadyDone] files Error [$errorCount]\n";
+exit($errorCount == 0 ? 0 : 1);
 
 sub Usage {
     my ($m) = @_;
