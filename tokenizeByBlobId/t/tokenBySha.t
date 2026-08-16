@@ -2,7 +2,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 13;
+use Test::More tests => 18;
 use FindBin;
 use File::Temp qw(tempdir);
 use Digest::SHA qw(sha1_hex);
@@ -85,6 +85,33 @@ my $memoFile = "$memoDir/" . substr($sha1, 0, 2) . "/" . substr($sha1, 2, 2) . "
     );
     is($status, 0, ".cpp run succeeds");
     like($out, qr/^STUB-TOKENIZER\n--language=C\+\+\n/, ".cpp maps to --language=C++");
+}
+
+{
+    my $failedContent = "int failure;\n";
+    my $failedSha1 = sha1_hex($failedContent);
+    my $failedMemoFile = "$memoDir/" . substr($failedSha1, 0, 2) . "/" .
+                         substr($failedSha1, 2, 2) . "/$failedSha1";
+
+    my ($status, $out, $err) = run_tokenbysha($failedContent,
+        BFG_MEMO_DIR     => $memoDir,
+        BFG_TOKENIZE_CMD => "/bin/false",
+        BFG_BLOB         => "5" x 40,
+        BFG_FILENAME     => "failure.c",
+    );
+    isnt($status, 0, "a tokenizer failure on a cache miss exits non-zero");
+    like($err, qr/tokenize command failed/, "the tokenizer failure is reported");
+    ok(!-e $failedMemoFile, "failed tokenizer output is not memoized");
+
+    ($status, $out, $err) = run_tokenbysha($failedContent,
+        BFG_MEMO_DIR     => $memoDir,
+        BFG_TOKENIZE_CMD => $stub,
+        BFG_BLOB         => "5" x 40,
+        BFG_FILENAME     => "failure.c",
+    );
+    is($status, 0, "the same blob can be tokenized after the command is fixed");
+    is($out, "STUB-TOKENIZER\n--language=C\n$failedContent",
+       "the retry executes the fixed tokenizer instead of replaying a poisoned cache entry");
 }
 
 {
