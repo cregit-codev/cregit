@@ -3,8 +3,9 @@ import unifyPersons.Person
 
 import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.lib.PersonIdent
+import org.apache.poi.hssf.usermodel.HSSFWorkbook
 
-import java.io.{File, PrintWriter}
+import java.io.{File, FileInputStream, PrintWriter}
 import java.nio.file.Files
 import java.sql.DriverManager
 import java.util.{Date, TimeZone}
@@ -46,6 +47,14 @@ class unifyPersonsSpec extends FunSuite {
     assert(a !== b)
   }
 
+  test("Persons with colliding hashes but different fields are not equal") {
+    val a = mkPerson("CCIB", "uhry@d49.test")
+    val b = mkPerson("XVHD", "u18rx@d23.test")
+    assert(a.hashCode === b.hashCode)
+    assert(a !== b)
+    assert(Set(a, b).size === 2)
+  }
+
   test("equal Persons deduplicate in a Set") {
     val a = mkPerson("Jim Smith", "jim@example.com")
     val b = mkPerson("Jim Smith", "jim@example.com")
@@ -55,6 +64,7 @@ class unifyPersonsSpec extends FunSuite {
 
   test("splitEmail splits user and domain") {
     assert(unifyPersons.splitEmail("a@b.com") === ("a", "b.com"))
+    assert(unifyPersons.splitEmail("Alice@Example.COM") === ("alice", "example.com"))
   }
 
   test("splitEmail without @ yields empty domain") {
@@ -149,7 +159,7 @@ class unifyPersonsSpec extends FunSuite {
       val utc = TimeZone.getTimeZone("UTC")
       val alice = new PersonIdent(
         "Alice Coder",
-        "alice@example.com",
+        "Alice@Example.COM",
         new Date(1500000000000L),
         utc)
       val bob = new PersonIdent(
@@ -165,8 +175,43 @@ class unifyPersonsSpec extends FunSuite {
       unifyPersons.main(Array(dir.getPath, spreadsheet.getPath, database.getPath))
 
       assert(spreadsheet.isFile)
-      assert(spreadsheet.length() > 0)
       assert(database.isFile)
+
+      val spreadsheetInput = new FileInputStream(spreadsheet)
+      val workbook = new HSSFWorkbook(spreadsheetInput)
+      try {
+        assert(workbook.getNumberOfSheets === 2)
+
+        val identities = workbook.getSheet("identities")
+        assert(identities != null)
+        assert(identities.getLastRowNum === 2)
+        assert((0 to 8).map(identities.getRow(0).getCell(_).getStringCellValue) === Seq(
+          "key", "lcname", "name", "email", "lcUserId", "lcDomain",
+          "countAll", "countAuthored", "countCommitted"))
+        assert((0 to 5).map(identities.getRow(1).getCell(_).getStringCellValue) === Seq(
+          "alice coder", "alice coder", "Alice Coder", "Alice@Example.COM",
+          "alice", "example.com"))
+        assert((6 to 8).map(identities.getRow(1).getCell(_).getNumericCellValue) === Seq(2.0, 1.0, 1.0))
+        assert((0 to 5).map(identities.getRow(2).getCell(_).getStringCellValue) === Seq(
+          "bob hacker", "bob hacker", "Bob Hacker", "bob@example.com",
+          "bob", "example.com"))
+        assert((6 to 8).map(identities.getRow(2).getCell(_).getNumericCellValue) === Seq(2.0, 1.0, 1.0))
+
+        val stats = workbook.getSheet("stats")
+        assert(stats != null)
+        assert(stats.getLastRowNum === 2)
+        assert((0 to 5).map(stats.getRow(0).getCell(_).getStringCellValue) === Seq(
+          "key", "preferred", "identCount", "allCount", "authoredCount", "committedCount"))
+        assert((0 to 1).map(stats.getRow(1).getCell(_).getStringCellValue) === Seq(
+          "alice coder", "Alice Coder"))
+        assert((2 to 5).map(stats.getRow(1).getCell(_).getNumericCellValue) === Seq(1.0, 2.0, 1.0, 1.0))
+        assert((0 to 1).map(stats.getRow(2).getCell(_).getStringCellValue) === Seq(
+          "bob hacker", "Bob Hacker"))
+        assert((2 to 5).map(stats.getRow(2).getCell(_).getNumericCellValue) === Seq(1.0, 2.0, 1.0, 1.0))
+      } finally {
+        workbook.close()
+        spreadsheetInput.close()
+      }
 
       Class.forName("org.sqlite.JDBC")
       val connection = DriverManager.getConnection("jdbc:sqlite:" + database.getPath)
@@ -182,7 +227,7 @@ class unifyPersonsSpec extends FunSuite {
         val statement = connection.prepareStatement(
           "select autcount, comcount from emails where emailaddr = ?")
         try {
-          statement.setString(1, "alice@example.com")
+          statement.setString(1, "Alice@Example.COM")
           val rows = statement.executeQuery()
           try {
             assert(rows.next())

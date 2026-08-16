@@ -38,6 +38,9 @@ sub git {
     system('git', '-C', $repo, @args) == 0 or die "git failed: @args";
 }
 
+local $ENV{GIT_CONFIG_NOSYSTEM} = 1;
+local $ENV{GIT_CONFIG_GLOBAL} = '/dev/null';
+
 make_path($repo);
 git('init', '-q', '-b', 'main');
 write_file("$repo/src/a.c", "int a;\n");
@@ -45,8 +48,6 @@ write_file("$repo/src/b.c", "int b;\n");
 write_file("$repo/src/empty.c", '');
 write_file("$repo/notes.txt", "notes\n");
 
-local $ENV{GIT_CONFIG_NOSYSTEM} = 1;
-local $ENV{GIT_CONFIG_GLOBAL} = '/dev/null';
 local $ENV{GIT_AUTHOR_NAME} = 'Alice';
 local $ENV{GIT_AUTHOR_EMAIL} = 'alice@example.com';
 local $ENV{GIT_COMMITTER_NAME} = 'Alice';
@@ -66,6 +67,8 @@ use strict;
 use warnings;
 use File::Basename qw(dirname);
 use File::Path qw(make_path);
+
+exit 7 if $ENV{FAIL_RENDER};
 
 open(my $log, '>>', $ENV{CALL_LOG}) or die $!;
 print $log join("\t", @ARGV), "\n";
@@ -141,6 +144,17 @@ sub run_driver {
     );
     my @calls = grep { length } split /\n/, slurp($call_log);
     is(scalar(@calls), 2, 'the renderer is invoked again during overwrite');
+}
+
+{
+    local $ENV{FAIL_RENDER} = 1;
+    my ($status, $stdout) = run_driver('--overwrite');
+    isnt($status, 0, 'a renderer failure makes the repository driver fail');
+    like(
+        $stdout,
+        qr/Newly processed \[1\] Already done \[0\] files Error \[1\]/,
+        'the failure summary reports the renderer error'
+    );
 }
 
 done_testing();

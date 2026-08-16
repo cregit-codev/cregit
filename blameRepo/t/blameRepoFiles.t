@@ -2,7 +2,7 @@
 
 use strict;
 use warnings;
-use Test::More tests => 9;
+use Test::More tests => 11;
 use FindBin;
 use File::Temp qw(tempdir);
 
@@ -65,4 +65,11 @@ mkdir $out or die $!;
     is($?, 0, "overwrite run succeeds");
     like($stdout, qr/Newly processed \[2\] Already done \[0\] files Error \[0\]/,
          "--overwrite reprocesses the files");
+}
+
+{
+    my $stdout = `perl '$script' --blameCommand=/bin/false --overwrite '$repo' '$out' '\\.c\$' 2>/dev/null`;
+    isnt($?, 0, "a formatter failure makes the repository driver fail");
+    like($stdout, qr/Newly processed \[2\] Already done \[0\] files Error \[2\]/,
+         "the failure summary reports every formatter error");
 }

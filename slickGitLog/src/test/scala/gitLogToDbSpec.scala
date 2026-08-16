@@ -19,10 +19,20 @@ class gitLogToDbSpec extends FunSuite {
     assert(gitLogToDB.remove_trailing_space("Bob Smith") === "Bob Smith")
   }
 
-  test("parseGraftLine maps '<child> <parent>' to (parent, 1, child)") {
+  test("parseGraftLine maps '<child> <parent>' to a zero-indexed parent row") {
     val child = "c" * 40
     val parent = "p" * 40
-    assert(gitLogToDB.parseGraftLine(s"$child $parent") === (parent, 1, child))
+    assert(gitLogToDB.parseGraftLine(s"$child $parent") === Seq((child, 0, parent)))
+  }
+
+  test("parseGraftLine preserves every parent of a grafted merge") {
+    val child = "c" * 40
+    val firstParent = "1" * 40
+    val secondParent = "2" * 40
+    assert(gitLogToDB.parseGraftLine(
+      s"$child $firstParent $secondParent") === Seq(
+        (child, 0, firstParent),
+        (child, 1, secondParent)))
   }
 
   def withTempRepo(testCode: (Git, File) => Unit): Unit = {
@@ -117,7 +127,30 @@ class gitLogToDbSpec extends FunSuite {
       out.println(s"$child $parent")
       out.close()
 
-      assert(gitLogToDB.findGrafts(dir.getPath, git) === List((parent, 1, child)))
+      assert(gitLogToDB.findGrafts(dir.getPath, git) === List((child, 0, parent)))
+    }
+  }
+
+  test("findGrafts reads info/grafts in a bare repo") {
+    val dir = Files.createTempDirectory("gitLogToDbBareSpec").toFile
+    val git = Git.init.setDirectory(dir).setBare(true).call()
+    try {
+      val child = "3" * 40
+      val parent = "4" * 40
+      new File(dir, "info").mkdirs()
+      val out = new PrintWriter(new File(dir, "info/grafts"))
+      out.println(s"$child $parent")
+      out.close()
+
+      assert(gitLogToDB.isBare(git) === true)
+      assert(gitLogToDB.findGrafts(dir.getPath, git) === List((child, 0, parent)))
+    } finally {
+      git.close()
+      def rm(file: File): Unit = {
+        if (file.isDirectory) file.listFiles.foreach(rm)
+        file.delete()
+      }
+      rm(dir)
     }
   }
 
@@ -130,6 +163,39 @@ class gitLogToDbSpec extends FunSuite {
   test("isBare is false for a working-tree repo") {
     withTempRepo { (git, dir) =>
       assert(gitLogToDB.isBare(git) === false)
+    }
+  }
+
+  test("main replaces recorded parents with graft parents") {
+    withTempRepo { (git, dir) =>
+      val first = commitFile(git, dir, "a.txt", "one\n", alice, "first")
+      val second = commitFile(git, dir, "b.txt", "two\n", bob, "second")
+      val third = commitFile(git, dir, "c.txt", "three\n", alice, "third")
+      assert(third.getParent(0).getName === second.getName)
+      new File(dir, ".git/info").mkdirs()
+      val grafts = new PrintWriter(new File(dir, ".git/info/grafts"))
+      grafts.println(s"${third.getName} ${first.getName}")
+      grafts.close()
+      val dbFile = new File(dir, "grafted-history.db")
+
+      gitLogToDB.main(Array(dbFile.getPath, dir.getPath))
+
+      Class.forName("org.sqlite.JDBC")
+      val connection = DriverManager.getConnection("jdbc:sqlite:" + dbFile.getPath)
+      try {
+        val statement = connection.prepareStatement(
+          "select idx, parent from parents where cid = ?")
+        try {
+          statement.setString(1, third.getName)
+          val rows = statement.executeQuery()
+          try {
+            assert(rows.next())
+            assert(rows.getInt(1) === 0)
+            assert(rows.getString(2) === first.getName)
+            assert(!rows.next())
+          } finally rows.close()
+        } finally statement.close()
+      } finally connection.close()
     }
   }
 
