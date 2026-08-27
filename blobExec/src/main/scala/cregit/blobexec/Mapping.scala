@@ -3,28 +3,11 @@ package cregit.blobexec
 import java.nio.file.Path
 import java.sql.{Connection, DriverManager, PreparedStatement}
 
-/**
- * SQLite-backed persistent mapping between original and rewritten object ids.
- *
- * The walker is single-threaded for DB writes (only the external command runs
- * in parallel, and worker threads return their results to the walker which
- * then persists them), so we hold one JDBC connection and rely on it being
- * confined to the walker thread.
- *
- * Each row carries a `processed_at` column (seconds since the unix epoch),
- * stamped by SQLite at insertion time. Per-row timestamps let callers
- * identify all rows produced by a given run (`WHERE processed_at >= T`).
- *
- * For non-matching blobs the walker records an identity row
- * (`orig_blob == new_blob`); this keeps the table as the authoritative
- * "blobs we've seen in src" set, useful for verification and audit.
- *
- * Mutation is unavoidable here — JDBC is intrinsically imperative. Callers
- * see a pure interface (`get*` returns `Option`, `put*` and `setMeta` return
- * `Unit` and are invoked inside `inTx`); internal state is just the cached
- * `PreparedStatement` handles.
- */
-final class Mapping private (conn: Connection) extends AutoCloseable {
+/** SQLite-backed persistent mapping between original and rewritten object ids.
+  * One JDBC connection confined to the walker thread (only the external command
+  * runs in parallel). Each row is stamped `processed_at` (epoch seconds) so a run's
+  * rows are queryable; non-matching blobs get identity rows (orig == new). */
+final class Mapping private (conn: Connection, warm: Option[Connection]) extends AutoCloseable {
 
   // INSERT OR IGNORE so processed_at reflects first-write time, not last.
   // The data values are deterministic for a given (key, command, mask), so
@@ -35,6 +18,12 @@ final class Mapping private (conn: Connection) extends AutoCloseable {
   private val insCommit = conn.prepareStatement("INSERT OR IGNORE INTO commit_map(orig_commit, new_commit) VALUES (?, ?)")
   private val selTree   = conn.prepareStatement("SELECT new_tree FROM tree_map WHERE orig_tree = ?")
   private val insTree   = conn.prepareStatement("INSERT OR IGNORE INTO tree_map(orig_tree, new_tree) VALUES (?, ?)")
+
+  // Read-only fallback on the optional warm DB (frozen prior memo): consulted only
+  // for content-addressed blob_map/tree_map misses, never commit_map, never written.
+  // A hit is the id a fresh tokenize would produce, so it only skips redone work.
+  private val warmSelBlob = warm.map(_.prepareStatement("SELECT new_blob FROM blob_map WHERE orig_blob = ? AND path = ?"))
+  private val warmSelTree = warm.map(_.prepareStatement("SELECT new_tree FROM tree_map WHERE orig_tree = ?"))
   // Refs: INSERT OR REPLACE because a ref at the same name can be retargeted
   // (branch moved, tag re-issued). The row should reflect the current dst
   // state, not the first-seen state. processed_at is updated accordingly.
@@ -46,6 +35,7 @@ final class Mapping private (conn: Connection) extends AutoCloseable {
 
   def getBlob(origBlob: String, path: String): Option[String] =
     Mapping.selectString(selBlob, origBlob, path)
+      .orElse(warmSelBlob.flatMap(st => Mapping.selectString(st, origBlob, path)))
 
   def putBlob(origBlob: String, path: String, newBlob: String): Unit =
     Mapping.execute(insBlob, origBlob, path, newBlob)
@@ -58,6 +48,7 @@ final class Mapping private (conn: Connection) extends AutoCloseable {
 
   def getTree(origTree: String): Option[String] =
     Mapping.selectString(selTree, origTree)
+      .orElse(warmSelTree.flatMap(st => Mapping.selectString(st, origTree)))
 
   def putTree(origTree: String, newTree: String): Unit =
     Mapping.execute(insTree, origTree, newTree)
@@ -144,10 +135,11 @@ final class Mapping private (conn: Connection) extends AutoCloseable {
   }
 
   override def close(): Unit = {
-    List(selBlob, insBlob, selCommit, insCommit, selTree, insTree,
-         selRef, insRef, delRef, selMeta, insMeta)
+    (List(selBlob, insBlob, selCommit, insCommit, selTree, insTree,
+          selRef, insRef, delRef, selMeta, insMeta) ++ warmSelBlob.toList ++ warmSelTree.toList)
       .foreach(s => try s.close() catch { case _: Throwable => () })
     conn.close()
+    warm.foreach(w => try w.close() catch { case _: Throwable => () })
   }
 }
 
@@ -156,14 +148,9 @@ object Mapping {
   /** Mismatch between the recorded command/mask and the values passed in. */
   final class MetaMismatchException(message: String) extends RuntimeException(message)
 
-  // strftime('%s','now') yields unix epoch seconds as a string; we store it
-  // as INTEGER so range filters / arithmetic stay numeric.
-  //
-  // Foreign keys: ref_map.orig_commit must exist in commit_map(orig_commit).
-  // ON DELETE CASCADE so cleaning up a commit's mapping also removes any
-  // refs that pointed at it. There is no natural FK from blob_map or
-  // tree_map back into commit_map (the same blob/tree appears in many
-  // commits; we don't track which one introduced it).
+  // processed_at stored INTEGER (epoch seconds) for numeric filters. FK
+  // ref_map.orig_commit -> commit_map ON DELETE CASCADE cleans up refs with their
+  // commit; blob_map/tree_map have no FK (a blob/tree spans many commits).
   private val Schema = Seq(
     """CREATE TABLE IF NOT EXISTS commit_map (
       |  orig_commit  TEXT PRIMARY KEY,
@@ -197,13 +184,9 @@ object Mapping {
       |)""".stripMargin
   )
 
-  // A row in ref_map. Covers every kind of ref the walker projects:
-  //   - kind = "head"            -- refs/heads/ and refs/remotes/;
-  //                                 orig_target == orig_commit, new_target == new_commit
-  //   - kind = "annotated_tag"   -- refs/tags/<name> backed by a tag object;
-  //                                 orig/new target are the tag-object SHAs, commit fields are peeled
-  //   - kind = "lightweight_tag" -- refs/tags/<name> pointing directly at a commit;
-  //                                 orig_target == orig_commit, new_target == new_commit (like head)
+  // A ref_map row. kind in {head, annotated_tag, lightweight_tag}: for annotated
+  // tags the target fields hold the tag-object SHAs (commit fields peeled);
+  // otherwise target == commit.
   final case class RefRow(
       refName: String,
       kind: String,
@@ -213,28 +196,49 @@ object Mapping {
       newCommit: String
   )
 
-  /** Enable SQLite FK enforcement on a fresh connection. Required per-connection. */
+  /** Configure a fresh connection: FK enforcement (per-connection), plus WAL +
+    * synchronous=NORMAL to drop the per-commit fsync floor (~1.46M txns) and
+    * busy_timeout for concurrent readers. Crash-safe for content-addressed data --
+    * a lost WAL tail is re-derived on resume from the memo. */
   private def enableForeignKeys(conn: Connection): Unit = {
     val st = conn.createStatement()
-    try st.execute("PRAGMA foreign_keys = ON") finally st.close()
+    try {
+      st.execute("PRAGMA foreign_keys = ON")
+      st.execute("PRAGMA journal_mode = WAL")
+      st.execute("PRAGMA synchronous = NORMAL")
+      st.execute("PRAGMA busy_timeout = 30000")
+    } finally st.close()
   }
 
-  /**
-   * Open or create the SQLite database at `path`. Creates the schema if
-   * absent. Validates `command` and `mask` against the `meta` table: on
-   * mismatch, throws `MetaMismatchException`; on absence, records them.
-   */
-  def open(path: Path, command: String, mask: String): Mapping = {
+  /** Open/create the SQLite DB at `path` (schema created if absent) and validate
+    * `command`/`mask` against `meta`: mismatch throws MetaMismatchException,
+    * absence records them. */
+  def open(path: Path, command: String, mask: String, warm: Option[Path] = None): Mapping = {
     val url = s"jdbc:sqlite:${path.toAbsolutePath}"
     val conn = DriverManager.getConnection(url)
     enableForeignKeys(conn)
     val st = conn.createStatement()
     try Schema.foreach(st.execute) finally st.close()
 
-    val m = new Mapping(conn)
+    val warmConn = warm.map(openWarm)
+
+    val m = new Mapping(conn, warmConn)
     checkOrSetMeta(m, "command", command)
     checkOrSetMeta(m, "mask",    mask)
     m
+  }
+
+  /** Open a frozen prior-run DB read-only (query_only + busy_timeout) as a lookup
+    * fallback; never written by us, so concurrent shard readers are safe. */
+  private def openWarm(path: Path): Connection = {
+    val url = s"jdbc:sqlite:${path.toAbsolutePath}"
+    val c = DriverManager.getConnection(url)
+    val st = c.createStatement()
+    try {
+      st.execute("PRAGMA query_only = ON")
+      st.execute("PRAGMA busy_timeout = 30000")
+    } finally st.close()
+    c
   }
 
   /** In-memory variant used by tests. */
@@ -243,7 +247,7 @@ object Mapping {
     enableForeignKeys(conn)
     val st = conn.createStatement()
     try Schema.foreach(st.execute) finally st.close()
-    val m = new Mapping(conn)
+    val m = new Mapping(conn, None)
     checkOrSetMeta(m, "command", command)
     checkOrSetMeta(m, "mask",    mask)
     m
