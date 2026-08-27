@@ -30,10 +30,32 @@ import java.nio.file.{Files, Paths}
 object Main {
 
   private val Usage =
-    """Usage: blobExec [--abort-on-error] <src.git> <dst.git> <db.sqlite> <command> <fileMaskRegex>
+    """Usage: blobExec [--abort-on-error] [--pipeline | --pipeline-trees | --shard=K/N] [--warm=<db>] <src.git> <dst.git> <db.sqlite> <command> <fileMaskRegex>
       |
       |  --abort-on-error  exit immediately (status 2) on the first non-zero
       |                    exit from <command>, instead of skipping that blob
+      |  --pipeline        use the look-ahead pipelined walker (producer runs
+      |                    ahead so the blob-command pool stays saturated);
+      |                    output is identical to the default serial walker
+      |  --pipeline-trees  as --pipeline, but also assembles rewritten trees on
+      |                    the worker pool (Design B: only commit construction
+      |                    and the ordered DB write stay on the consumer);
+      |                    output is identical to the default serial walker
+      |  --shard=K/N       TREE-ONLY history shard: partition the commits (in
+      |                    canonical TOPO+REVERSE order) into N contiguous
+      |                    ranges and process only shard K (0-based). Tokenizes
+      |                    blobs and builds+persists trees (blob_map + tree_map
+      |                    incl. subtree ids) for the slice, but does NOT fold
+      |                    commits (no commit_map, no refs). Run N shards to
+      |                    their own dst.git + db.sqlite, then merge + serial
+      |                    re-fold (shard_merge.py) for byte-identical output.
+      |                    Uses the flat-memory serial walker; mutually
+      |                    exclusive with --pipeline / --pipeline-trees.
+      |  --warm=<db>       optional read-only fallback DB (a frozen prior memo,
+      |                    e.g. the paused whole-kernel run). On a blob_map /
+      |                    tree_map miss the lookup falls through to this DB, so
+      |                    a shard skips re-tokenizing content already done.
+      |                    Never written; commit_map is never consulted.
       |  <src.git>         bare source repo (read-only)
       |  <dst.git>         bare destination repo (created on first run, reused on incremental)
       |  <db.sqlite>       SQLite mapping file (created on first run, reused on incremental)
@@ -44,12 +66,53 @@ object Main {
   def main(args: Array[String]): Unit = {
     val (flags, positional) = args.partition(_.startsWith("-"))
 
-    val abortOnError = flags.foldLeft(false) {
-      case (_, "--abort-on-error") => true
-      case (_, other) =>
+    var abortOnError = false
+    var pipeline     = false
+    var pipelineTrees = false
+    var shard: Option[(Int, Int)] = None
+    var warmPath: Option[java.nio.file.Path] = None
+    flags.foreach {
+      case "--abort-on-error" => abortOnError = true
+      case "--pipeline"       => pipeline = true
+      case "--pipeline-trees" => pipelineTrees = true
+      case s if s.startsWith("--shard=") =>
+        val spec = s.stripPrefix("--shard=")
+        spec.split("/", -1) match {
+          case Array(kStr, nStr) =>
+            val k = kStr.toIntOption.getOrElse(-1)
+            val n = nStr.toIntOption.getOrElse(-1)
+            if (n < 1 || k < 0 || k >= n) {
+              System.err.println(s"Error: --shard must be K/N with 0 <= K < N and N >= 1 [$spec]")
+              sys.exit(1)
+            }
+            shard = Some((k, n))
+          case _ =>
+            System.err.println(s"Error: --shard must be of the form K/N [$spec]")
+            sys.exit(1)
+        }
+      case w if w.startsWith("--warm=") =>
+        val p = Paths.get(w.stripPrefix("--warm="))
+        if (!Files.isRegularFile(p)) {
+          System.err.println(s"Error: --warm db [$p] is not a file")
+          sys.exit(1)
+        }
+        warmPath = Some(p)
+      case other =>
         System.err.println(s"Error: unknown flag [$other]")
         System.err.println(Usage)
         sys.exit(1)
+    }
+
+    if (pipeline && pipelineTrees) {
+      System.err.println("Error: --pipeline and --pipeline-trees are mutually exclusive")
+      System.err.println(Usage)
+      sys.exit(1)
+    }
+
+    if (shard.isDefined && (pipeline || pipelineTrees)) {
+      System.err.println("Error: --shard uses the serial tree-only walker and cannot be combined with --pipeline / --pipeline-trees")
+      System.err.println(Usage)
+      sys.exit(1)
     }
 
     if (positional.length != 5) {
@@ -81,14 +144,17 @@ object Main {
     if (dbParent != null && !Files.isDirectory(dbParent)) Files.createDirectories(dbParent)
 
     val incremental = Files.isDirectory(dstPath)
+    val shardStr = shard.map { case (k, n) => s"$k/$n" }.getOrElse("none")
+    val warmStr  = warmPath.map(_.toString).getOrElse("none")
     println(
       s"blobExec: src=$srcPath dst=$dstPath db=$dbPath command=$command mask=$mask " +
-        s"abortOnError=$abortOnError incremental=$incremental"
+        s"abortOnError=$abortOnError pipeline=$pipeline pipelineTrees=$pipelineTrees " +
+        s"shard=$shardStr warm=$warmStr incremental=$incremental"
     )
 
     val src: FileRepository = openSrc(srcPath)
     val dst: FileRepository = openOrInitDst(dstPath)
-    val mapping = try Mapping.open(dbPath, command, mask) catch {
+    val mapping = try Mapping.open(dbPath, command, mask, warmPath) catch {
       case m: Mapping.MetaMismatchException =>
         System.err.println(s"Error: ${m.getMessage}")
         src.close(); dst.close()
@@ -97,7 +163,7 @@ object Main {
 
     val stats = try {
       val parallelism = math.max(1, Runtime.getRuntime.availableProcessors)
-      val walker = new Walker(src, dst, mapping, mask.r, command, abortOnError, parallelism)
+      val walker = new Walker(src, dst, mapping, mask.r, command, abortOnError, parallelism, pipeline, pipelineTrees, shard)
       walker.run()
     } finally {
       mapping.close()
