@@ -5,7 +5,8 @@ import org.eclipse.jgit.lib._
 import org.eclipse.jgit.revwalk.{RevCommit, RevSort, RevTag, RevWalk}
 import org.eclipse.jgit.treewalk.{CanonicalTreeParser, TreeWalk}
 
-import java.util.concurrent.{Executors, TimeUnit}
+import java.util.concurrent.{ArrayBlockingQueue, BlockingQueue, ConcurrentHashMap, Executors, TimeUnit}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 import scala.collection.immutable.{Map => IMap}
 import scala.concurrent.duration._
 import scala.concurrent.{Await, ExecutionContext, Future}
@@ -21,19 +22,8 @@ final case class WalkStats(
     aborted: Boolean
 )
 
-/**
- * Drive the walk that rebuilds `src` history into `dst`, persisting mappings
- * to `mapping`. See plan file `replicated-popping-patterson.md` for the full
- * algorithm.
- *
- * Side effects are confined to:
- *   - jgit `ObjectInserter` / `RefDatabase` (writes to dst)
- *   - `Mapping` (writes to SQLite)
- *   - blob worker thread pool (runs the external command)
- *
- * Pure data (tree plans, blob misses, mapped-parent lists) is built with
- * immutable structures.
- */
+/** Rebuild `src` history into `dst`, persisting mappings to `mapping`.
+  * Writes are confined to the jgit inserter/refs, `Mapping`, and the blob pool. */
 final class Walker(
     src: Repository,
     dst: Repository,
@@ -41,13 +31,29 @@ final class Walker(
     fileMask: Regex,
     command: String,
     abortOnError: Boolean,
-    parallelism: Int
+    parallelism: Int,
+    pipeline: Boolean = false,
+    pipelineTrees: Boolean = false,
+    shard: Option[(Int, Int)] = None
 ) {
   import Walker._
 
+  // Serializes `mapping` access (one non-thread-safe JDBC connection): the
+  // pipelined producer reads while the consumer writes. Tokenizer workers never
+  // touch it, so the CPU-heavy path stays lock-free.
+  private val dbLock = new AnyRef
+
   // -- entry point ---------------------------------------------------------
 
-  def run(): WalkStats = {
+  def run(): WalkStats = shard match {
+    case Some((k, n)) => runShard(k, n)
+    case None         => runFull()
+  }
+
+  /** Full history rewrite: walk every not-yet-mapped commit, fold the commit
+    * graph, and project refs. This is the canonical single-process path (also
+    * used, unchanged, as the merge re-fold over a warmed tree_map). */
+  private def runFull(): WalkStats = {
     val revWalk = new RevWalk(src)
     revWalk.sort(RevSort.TOPO, true)
     revWalk.sort(RevSort.REVERSE, true)
@@ -56,7 +62,10 @@ final class Walker(
       markUninteresting(revWalk)
       markStartRefs(revWalk)
 
-      val (commitsProcessed, blobsRun, blobsHit, aborted) = walkCommits(revWalk)
+      val (commitsProcessed, blobsRun, blobsHit, aborted) =
+        if (pipelineTrees) walkCommitsTrees(revWalk)
+        else if (pipeline) walkCommitsPipelined(revWalk)
+        else walkCommits(revWalk)
       val refsCount =
         if (aborted) 0
         else projectRefs(revWalk)
@@ -70,6 +79,116 @@ final class Walker(
         aborted                = aborted
       )
     } finally revWalk.close()
+  }
+
+  /** Tree-only history shard (Tier 3): for shard `k` of `n` contiguous
+    * TOPO+REVERSE ranges, tokenize + persist each commit's tree (blob_map/tree_map
+    * incl. subtree ids) but resolve no parents/commit/refs, so shards are independent.
+    * A later serial [[runFull]] re-fold unions the shards and rebuilds commit_map
+    * byte-identically -- content-addressed ids mean the shard boundary can't affect output. */
+  private def runShard(k: Int, n: Int): WalkStats = {
+    val ordered = enumerateCommits()
+    val m  = ordered.size
+    // Contiguous, exhaustive, non-overlapping integer partition:
+    //   shard k owns [floor(k*m/n), floor((k+1)*m/n)).
+    val lo = ((k.toLong * m) / n).toInt
+    val hi = (((k + 1).toLong * m) / n).toInt
+    val slice = ordered.slice(lo, hi)
+    println(s"blobExec shard $k/$n: totalCommits=$m range=[$lo,$hi) sliceSize=${slice.size}")
+
+    val (commits, blobsRun, blobsHit, aborted) = walkShard(slice)
+    WalkStats(
+      commitsProcessed       = commits,
+      commitsAlreadyMapped   = 0,
+      blobsRunThroughCommand = blobsRun,
+      blobsCacheHit          = blobsHit,
+      refsProjected          = 0,     // shards deliberately never project refs
+      aborted                = aborted
+    )
+  }
+
+  /** The canonical ordered commit enumeration used to partition shards. Same
+    * config as the full walk's RevWalk (TOPO+REVERSE, all ref tips), minus the
+    * commit_map frontier (a tree-only shard never writes commit_map, and the
+    * partition must cover the whole history). Bodies are disposed as we go so
+    * only the id vector is retained. */
+  private def enumerateCommits(): Vector[ObjectId] = {
+    val rw = new RevWalk(src)
+    rw.sort(RevSort.TOPO, true)
+    rw.sort(RevSort.REVERSE, true)
+    try {
+      markStartRefs(rw)
+      val b  = Vector.newBuilder[ObjectId]
+      val it = rw.iterator()
+      while (it.hasNext) {
+        val rc = it.next()
+        b += rc.getId
+        rc.disposeBody()
+      }
+      b.result()
+    } finally rw.close()
+  }
+
+  /** Process one shard's slice of commits, tree-only. Modeled on
+    * [[walkCommits]] with the commit fold removed: no parent resolution, no
+    * buildCommit, no putCommit, no ref projection. Returns
+    * (commitsProcessed, blobsRun, blobsHit, aborted). */
+  private def walkShard(sliceIds: Vector[ObjectId]): (Int, Int, Int, Boolean) = {
+    val pool = Executors.newFixedThreadPool(parallelism)
+    implicit val ec: ExecutionContext = ExecutionContext.fromExecutor(pool)
+    val treeInserter = dst.newObjectInserter()
+    val procWalk     = new RevWalk(src)
+
+    var aborted  = false
+    var commits  = 0
+    var blobsRun = 0
+    var blobsHit = 0
+
+    try {
+      val it = sliceIds.iterator
+      while (it.hasNext && !aborted) {
+        val rc = procWalk.parseCommit(it.next())
+        val origTreeId = rc.getTree.getId
+
+        // Pure plan for this commit's tree (short-circuits on a tree_map hit,
+        // incl. the optional --warm fallback).
+        val (plan, artifacts) = buildTreePlan(origTreeId, pathPrefix = "")
+        val (resolved, abortFromBlob) = resolveMisses(artifacts.misses, pool)
+
+        if (abortFromBlob) {
+          aborted = true
+        } else {
+          val subtreeMap = scala.collection.mutable.Map.empty[String, String]
+          val newTreeId  = assemble(plan, resolved, treeInserter, subtreeMap)
+
+          mapping.inTx {
+            resolved.foreach { case ((origSha, path), newId) =>
+              mapping.putBlob(origSha, path, newId.name)
+            }
+            artifacts.unchangedBlobs.foreach { case (bid, path) =>
+              mapping.putBlob(bid.name, path, bid.name)
+            }
+            mapping.putTree(origTreeId.name, newTreeId.name)
+            subtreeMap.foreach { case (origId, newId) => mapping.putTree(origId, newId) }
+            // No putCommit: the shard omits the parent-dependent hash-chain fold.
+          }
+
+          commits  += 1
+          blobsRun += artifacts.misses.size
+          blobsHit += artifacts.hitCount
+        }
+        rc.disposeBody()
+      }
+
+      treeInserter.flush()
+    } finally {
+      treeInserter.close()
+      procWalk.close()
+      pool.shutdown()
+      val _ = pool.awaitTermination(1, TimeUnit.MINUTES)
+    }
+
+    (commits, blobsRun, blobsHit, aborted)
   }
 
   // -- ref preparation -----------------------------------------------------
@@ -139,8 +258,12 @@ final class Walker(
         if (abortFromBlob) {
           aborted = true
         } else {
-          // Assemble the new tree id (bottom-up).
-          val newTreeId = assemble(plan, resolved, treeInserter)
+          // Assemble the new tree id (bottom-up). `subtreeMap` collects every
+          // freshly built (sub)tree's orig->new id so the transaction below
+          // can persist them into tree_map (keystone: lets an unchanged
+          // subtree short-circuit on a later commit instead of re-walking).
+          val subtreeMap = scala.collection.mutable.Map.empty[String, String]
+          val newTreeId = assemble(plan, resolved, treeInserter, subtreeMap)
 
           // Record the resolved blobs and the top-level tree mapping.
           val parents = rc.getParents.toVector.map { p =>
@@ -164,6 +287,7 @@ final class Walker(
               mapping.putBlob(id.name, path, id.name)
             }
             mapping.putTree(rc.getTree.getId.name, newTreeId.name)
+            subtreeMap.foreach { case (origId, newId) => mapping.putTree(origId, newId) }
             mapping.putCommit(origCommitSha, newCommit.name)
           }
 
@@ -185,21 +309,357 @@ final class Walker(
     (commits, blobsRun, blobsHit, aborted)
   }
 
+  // -- pipelined commit loop ----------------------------------------------
+
+  /** Look-ahead pipelined [[walkCommits]]: a producer runs ahead up to a bounded
+    * window, submitting every unique blob miss to the pool to keep it saturated,
+    * while the single consumer applies results in strict RevWalk order. Content-
+    * addressed trees + a deterministic tokenizer keep commit_map byte-identical to
+    * the serial walker. Returns (commitsProcessed, blobsRun, blobsHit, aborted). */
+  private def walkCommitsPipelined(revWalk: RevWalk): (Int, Int, Int, Boolean) = {
+    val pool = Executors.newFixedThreadPool(parallelism)
+    implicit val ec: ExecutionContext = ExecutionContext.fromExecutor(pool)
+    val treeInserter   = dst.newObjectInserter()
+    val commitInserter = dst.newObjectInserter()
+
+    // Bounded look-ahead: the queue caps how far the producer runs ahead of
+    // the consumer, which in turn bounds the in-flight future map so memory
+    // stays flat regardless of history length.
+    val queue: BlockingQueue[QueueItem] = new ArrayBlockingQueue[QueueItem](PipelineWindow)
+    // Dedup: tokenize each (origSha, path) at most once while it is in flight,
+    // so a blob shared by several in-window commits reuses one future.
+    val inFlight = new ConcurrentHashMap[(String, String), Future[BlobResult]]()
+
+    val aborted       = new AtomicBoolean(false)
+    val producerError = new AtomicReference[Throwable](null)
+
+    // -- producer: iterate the walk in order, plan trees, submit blob work --
+    val producer = new Thread(new Runnable {
+      def run(): Unit = {
+        try {
+          val iter = revWalk.iterator()
+          while (iter.hasNext && !aborted.get()) {
+            val rc   = iter.next()
+            val data = snapshotCommit(rc)  // decouple consumer from the shared RevWalk
+            val (plan, artifacts) = buildTreePlan(rc.getTree.getId, pathPrefix = "")
+            rc.disposeBody()  // Tier 1: snapshot + plan already copied all needed fields; free the
+                              // raw RevCommit body so ~1.46M bodies don't accumulate over the walk.
+            // De-dup within the commit, then submit/reuse across the window.
+            val uniqueMisses = artifacts.misses.iterator
+              .map(m => (m.origId.name, m.fullPath) -> m).toMap
+            val missFutures: Map[(String, String), Future[BlobResult]] =
+              uniqueMisses.map { case (key, task) =>
+                key -> inFlight.computeIfAbsent(key, (_: (String, String)) => Future(executeBlobTask(task)))
+              }
+            queue.put(CommitItem(data, plan, artifacts, missFutures))  // backpressure when full
+          }
+        } catch {
+          case t: Throwable =>
+            producerError.set(t)
+            aborted.set(true)
+        } finally {
+          // The consumer always drains to EndOfWalk, so this cannot deadlock
+          // on a full queue even after an early stop.
+          try queue.put(EndOfWalk) catch { case _: InterruptedException => Thread.currentThread().interrupt() }
+        }
+      }
+    }, "blobexec-producer")
+    producer.setDaemon(true)
+    producer.start()
+
+    // -- consumer: this thread, strict order, sole DB writer ----------------
+    var commits  = 0
+    var blobsRun = 0
+    var blobsHit = 0
+    var stopped  = false
+
+    try {
+      while (!stopped) {
+        queue.take() match {
+          case EndOfWalk => stopped = true
+          case CommitItem(data, plan, artifacts, missFutures) =>
+            if (aborted.get()) {
+              // Draining after abort/producer-error: discard until EndOfWalk.
+            } else {
+              // Await only this commit's futures (typically already complete).
+              val results = missFutures.map { case (k, f) => k -> Await.result(f, Duration.Inf) }
+              results.values.collectFirst { case a: BlobResult.Aborted => a } match {
+                case Some(_) =>
+                  aborted.set(true)  // stop the producer; drain the remainder
+                case None =>
+                  val resolved: IMap[(String, String), ObjectId] =
+                    results.iterator.collect { case (k, BlobResult.Resolved(id)) => k -> id }.toMap
+                  val subtreeMap = scala.collection.mutable.Map.empty[String, String]
+                  val newTreeId = assemble(plan, resolved, treeInserter, subtreeMap)
+                  val parents = data.parentOrigShas.map { pn =>
+                    dbLock.synchronized(mapping.getCommit(pn)).getOrElse(
+                      throw new IllegalStateException(
+                        s"parent commit $pn missing from commit_map while processing ${data.origCommitSha}")
+                    )
+                  }.map(ObjectId.fromString)
+                  val newCommit = buildCommitFromData(data, parents, newTreeId, commitInserter)
+                  dbLock.synchronized {
+                    mapping.inTx {
+                      resolved.foreach { case ((origSha, path), newId) =>
+                        mapping.putBlob(origSha, path, newId.name)
+                      }
+                      artifacts.unchangedBlobs.foreach { case (id, path) =>
+                        mapping.putBlob(id.name, path, id.name)
+                      }
+                      mapping.putTree(data.origTreeId.name, newTreeId.name)
+                      subtreeMap.foreach { case (origId, newId) => mapping.putTree(origId, newId) }
+                      mapping.putCommit(data.origCommitSha, newCommit.name)
+                    }
+                  }
+                  commits  += 1
+                  blobsRun += artifacts.misses.size
+                  blobsHit += artifacts.hitCount
+              }
+              // Flat memory: this commit's blobs are now cached in blob_map, so
+              // future producer look-ups hit the DB instead of the dedup map.
+              // In-window commits that already referenced these keys captured
+              // their future handles, so removal is safe.
+              missFutures.keysIterator.foreach(k => inFlight.remove(k))
+            }
+        }
+      }
+
+      treeInserter.flush()
+      commitInserter.flush()
+    } finally {
+      treeInserter.close()
+      commitInserter.close()
+      pool.shutdown()
+      if (!pool.awaitTermination(1, TimeUnit.MINUTES)) { pool.shutdownNow(); () }
+      try producer.join(TimeUnit.MINUTES.toMillis(1)) catch { case _: InterruptedException => Thread.currentThread().interrupt() }
+    }
+
+    // Surface an unexpected producer failure (distinct from a clean abort).
+    Option(producerError.get()).foreach(t => throw t)
+
+    (commits, blobsRun, blobsHit, aborted.get())
+  }
+
+  // -- tree-parallel pipelined commit loop (Design B) ----------------------
+
+  /** Design B: [[walkCommitsPipelined]] plus tree ASSEMBLY moved onto the pool.
+    * The serial consumer rebuilt each commit's tree bottom-up (only top trees are
+    * memoized), capping cores at ~7/16; here each commit's `assemble` is chained off
+    * its blob tasks with a per-worker `ObjectInserter`, so many assemble concurrently.
+    * The consumer keeps only the ordered persist step (one DB writer => just producer
+    * + consumer contend for `dbLock`), so commit_map stays byte-identical to serial.
+    * Returns (commitsProcessed, blobsRun, blobsHit, aborted). */
+  private def walkCommitsTrees(revWalk: RevWalk): (Int, Int, Int, Boolean) = {
+    val pool = Executors.newFixedThreadPool(parallelism)
+    implicit val ec: ExecutionContext = ExecutionContext.fromExecutor(pool)
+    // Only the consumer writes commit objects; each worker uses its own
+    // inserter (created inside `assembleTreeOnly`) for the trees/blobs it
+    // assembles, mirroring the per-worker inserter in `executeBlobTask`.
+    val commitInserter = dst.newObjectInserter()
+
+    val queue: BlockingQueue[TreeQueueItem] = new ArrayBlockingQueue[TreeQueueItem](PipelineWindow)
+    val inFlight = new ConcurrentHashMap[(String, String), Future[BlobResult]]()
+
+    val aborted       = new AtomicBoolean(false)
+    val producerError = new AtomicReference[Throwable](null)
+
+    // -- producer: plan trees, submit blob work, chain tree assembly --------
+    val producer = new Thread(new Runnable {
+      def run(): Unit = {
+        try {
+          val iter = revWalk.iterator()
+          while (iter.hasNext && !aborted.get()) {
+            val rc   = iter.next()
+            val data = snapshotCommit(rc)
+            val (plan, artifacts) = buildTreePlan(rc.getTree.getId, pathPrefix = "")
+            // De-dup within the commit, then submit/reuse across the window.
+            val uniqueMisses = artifacts.misses.iterator
+              .map(m => (m.origId.name, m.fullPath) -> m).toMap
+            val missFutures: Map[(String, String), Future[BlobResult]] =
+              uniqueMisses.map { case (key, task) =>
+                key -> inFlight.computeIfAbsent(key, (_: (String, String)) => Future(executeBlobTask(task)))
+              }
+            // Chain tree assembly onto this commit's blob tokenizations. The
+            // `.map` continuation runs on a pool thread (non-blocking Future
+            // composition, no thread parked), so multiple commits' assemblies
+            // proceed concurrently. Keys are carried through so the consumer
+            // can record blob_map without re-awaiting.
+            val keyed = missFutures.toVector
+            val treeFuture: Future[TreeResult] =
+              Future.sequence(keyed.map { case (k, f) => f.map(r => (k, r)) })
+                .map(results => assembleTreeOnly(plan, results))
+            queue.put(CommitTreeItem(data, artifacts, missFutures.keySet, treeFuture))  // backpressure when full
+          }
+        } catch {
+          case t: Throwable =>
+            producerError.set(t)
+            aborted.set(true)
+        } finally {
+          try queue.put(EndOfTreeWalk) catch { case _: InterruptedException => Thread.currentThread().interrupt() }
+        }
+      }
+    }, "blobexec-tree-producer")
+    producer.setDaemon(true)
+    producer.start()
+
+    // -- consumer: strict order, parent resolution + all DB writes ----------
+    var commits  = 0
+    var blobsRun = 0
+    var blobsHit = 0
+    var stopped  = false
+
+    try {
+      while (!stopped) {
+        queue.take() match {
+          case EndOfTreeWalk => stopped = true
+          case CommitTreeItem(data, artifacts, blobKeys, treeFuture) =>
+            if (aborted.get()) {
+              // Draining after abort/producer-error: discard until EndOfTreeWalk.
+            } else {
+              // The assembly (and any abort it observed) is already done off-thread.
+              Await.result(treeFuture, Duration.Inf) match {
+                case TreeResult.Aborted(_, _) =>
+                  aborted.set(true)  // stop the producer; drain the remainder
+                case TreeResult.Built(newTreeId, resolved, subtrees) =>
+                  val parents = data.parentOrigShas.map { pn =>
+                    dbLock.synchronized(mapping.getCommit(pn)).getOrElse(
+                      throw new IllegalStateException(
+                        s"parent commit $pn missing from commit_map while processing ${data.origCommitSha}")
+                    )
+                  }.map(ObjectId.fromString)
+                  val newCommit = buildCommitFromData(data, parents, newTreeId, commitInserter)
+                  dbLock.synchronized {
+                    mapping.inTx {
+                      resolved.foreach { case ((origSha, path), newId) =>
+                        mapping.putBlob(origSha, path, newId.name)
+                      }
+                      artifacts.unchangedBlobs.foreach { case (id, path) =>
+                        mapping.putBlob(id.name, path, id.name)
+                      }
+                      mapping.putTree(data.origTreeId.name, newTreeId.name)
+                      subtrees.foreach { case (origId, newId) => mapping.putTree(origId, newId) }
+                      mapping.putCommit(data.origCommitSha, newCommit.name)
+                    }
+                  }
+                  commits  += 1
+                  blobsRun += artifacts.misses.size
+                  blobsHit += artifacts.hitCount
+              }
+              // Flat memory: this commit's blobs are now cached in blob_map, so
+              // future producer look-ups hit the DB instead of the dedup map.
+              blobKeys.foreach(k => inFlight.remove(k))
+            }
+        }
+      }
+
+      commitInserter.flush()
+    } finally {
+      commitInserter.close()
+      pool.shutdown()
+      if (!pool.awaitTermination(1, TimeUnit.MINUTES)) { pool.shutdownNow(); () }
+      try producer.join(TimeUnit.MINUTES.toMillis(1)) catch { case _: InterruptedException => Thread.currentThread().interrupt() }
+    }
+
+    // Surface an unexpected producer failure (distinct from a clean abort).
+    Option(producerError.get()).foreach(t => throw t)
+
+    (commits, blobsRun, blobsHit, aborted.get())
+  }
+
+  /** Worker-side (pool) assembly of one commit's tree with a fresh per-worker
+    * `ObjectInserter`, returning the top-tree id + resolved blob map. Touches no
+    * shared state (`mapping`/`commit_map`), so it needs no `dbLock`; a blob
+    * abort-on-error propagates instead of building a tree. */
+  private def assembleTreeOnly(
+      plan: TreePlan,
+      blobResults: Vector[((String, String), BlobResult)]
+  ): TreeResult = {
+    blobResults.iterator.map(_._2).collectFirst { case a: BlobResult.Aborted => a } match {
+      case Some(a) => TreeResult.Aborted(a.stderr, a.exitCode)
+      case None =>
+        val resolved: IMap[(String, String), ObjectId] =
+          blobResults.iterator.collect { case (k, BlobResult.Resolved(id)) => k -> id }.toMap
+        val inserter = dst.newObjectInserter()
+        try {
+          val subtreeMap = scala.collection.mutable.Map.empty[String, String]
+          val newTreeId = assemble(plan, resolved, inserter, subtreeMap)
+          inserter.flush()
+          TreeResult.Built(newTreeId, resolved, subtreeMap.toMap)
+        } finally inserter.close()
+    }
+  }
+
+  /** Worker body run on the pool: read the blob, run the external command,
+    * and return the id the rewritten tree should reference. Mirrors the
+    * per-task logic in [[resolveMisses]] (a Skip re-inserts the original bytes
+    * into dst). Never touches `mapping`, keeping the hot path lock-free. */
+  private def executeBlobTask(task: BlobMissTask): BlobResult = {
+    val bytes = readBlob(task.origId)
+    val workerInserter = dst.newObjectInserter()
+    try {
+      val outcome = BlobExec.run(
+        bytes        = bytes,
+        origSha      = task.origId.name,
+        filename     = task.filename,
+        fullPath     = task.fullPath,
+        command      = command,
+        abortOnError = abortOnError,
+        inserter     = workerInserter
+      )
+      val res = outcome match {
+        case BlobExec.Outcome.Skip =>
+          workerInserter.insert(OBJ_BLOB, bytes); BlobResult.Resolved(task.origId)
+        case BlobExec.Outcome.Replace(newId) =>
+          BlobResult.Resolved(newId)
+        case BlobExec.Outcome.Abort(stderr, code) =>
+          BlobResult.Aborted(stderr, code)
+      }
+      workerInserter.flush()
+      res
+    } finally workerInserter.close()
+  }
+
+  /** Freeze everything the consumer needs from a RevCommit so it never touches
+    * the shared, single-threaded RevWalk owned by the producer. */
+  private def snapshotCommit(rc: RevCommit): CommitData = {
+    val enc = try rc.getEncoding catch { case _: Throwable => java.nio.charset.StandardCharsets.UTF_8 }
+    CommitData(
+      origCommitSha  = rc.getId.name,
+      parentOrigShas = rc.getParents.toVector.map(_.getId.name),
+      origTreeId     = rc.getTree.getId,
+      author         = rc.getAuthorIdent,
+      committer      = rc.getCommitterIdent,
+      encoding       = enc,
+      fullMessage    = rc.getFullMessage
+    )
+  }
+
+  /** Identical to [[buildCommit]] but sourced from an immutable snapshot.
+    * Produces the same commit bytes (hence the same SHA) as the serial path. */
+  private def buildCommitFromData(
+      data: CommitData,
+      parents: Vector[ObjectId],
+      newTree: ObjectId,
+      inserter: ObjectInserter
+  ): ObjectId = {
+    val cb = new CommitBuilder
+    cb.setAuthor(data.author)
+    cb.setCommitter(data.committer)
+    cb.setEncoding(data.encoding)
+    cb.setMessage(FormerCommitFooter.append(data.fullMessage, data.origCommitSha))
+    cb.setTreeId(newTree)
+    cb.setParentIds(parents: _*)
+    inserter.insert(cb)
+  }
+
   // -- tree planning -------------------------------------------------------
 
-  /** Walk `origTreeId` under `pathPrefix` (e.g. "src/lib/"), producing:
-    *   - a `TreePlan` describing how to rebuild the tree
-    *   - the matching-blob misses to resolve via the external command
-    *   - the count of matching-blob cache hits encountered (for stats)
-    *   - the non-matching blobs we saw, as `(orig_id, full_path)` pairs,
-    *     so the walker can record identity rows in `blob_map`
-    *
-    * Caveat: when `tree_map` short-circuits, we don't re-walk to record
-    * blob paths. If the same subtree id later appears under a different
-    * parent path, blob_map will miss those (blob, alt_path) rows.
-    */
+  /** Walk `origTreeId` under `pathPrefix`, returning a `TreePlan`, the matching-blob
+    * misses to tokenize, the hit count, and the non-matching (orig_id, full_path)
+    * pairs for identity rows. Caveat: a `tree_map` short-circuit skips the re-walk,
+    * so blob_map can miss (blob, alt_path) rows for the same subtree under a new path. */
   private def buildTreePlan(origTreeId: ObjectId, pathPrefix: String): (TreePlan, PlanArtifacts) = {
-    mapping.getTree(origTreeId.name) match {
+    dbLock.synchronized(mapping.getTree(origTreeId.name)) match {
       case Some(newName) =>
         (TreeExisting(ObjectId.fromString(newName)), PlanArtifacts.empty)
       case None =>
@@ -232,7 +692,7 @@ final class Walker(
             } else {
               // Blob (regular file, executable, or symlink).
               if (fileMask.findFirstIn(name).isDefined) {
-                mapping.getBlob(id.name, fullPath) match {
+                dbLock.synchronized(mapping.getBlob(id.name, fullPath)) match {
                   case Some(newSha) =>
                     builder += EntryBlobHit(name, mode, ObjectId.fromString(newSha))
                     hits += 1
@@ -247,7 +707,7 @@ final class Walker(
             }
           }
           val artifacts = PlanArtifacts(missesBuilder.result(), hits, unchangedBldr.result())
-          (TreeBuild(builder.result()), artifacts)
+          (TreeBuild(origTreeId, builder.result()), artifacts)
         } finally reader.close()
     }
   }
@@ -319,34 +779,41 @@ final class Walker(
 
   // -- assembly ------------------------------------------------------------
 
-  /** Walk the plan bottom-up and write trees into dst, returning the top id. */
+  /** Build the plan bottom-up, writing trees into dst and returning the top id.
+    * Each subtree's `origId -> newId` goes into `subtreeAcc`; the caller persists it
+    * to `tree_map` so a later unchanged subtree short-circuits [[buildTreePlan]].
+    * Safe because rewritten ids are content-addressed (path-independent). */
   private def assemble(
       plan: TreePlan,
       resolved: IMap[(String, String), ObjectId],
-      inserter: ObjectInserter
+      inserter: ObjectInserter,
+      subtreeAcc: scala.collection.mutable.Map[String, String]
   ): ObjectId = plan match {
     case TreeExisting(id) => id
-    case TreeBuild(entries) =>
+    case TreeBuild(origId, entries) =>
       val tf = new org.eclipse.jgit.lib.TreeFormatter
-      val resolvedEntries = entries.map(resolveEntry(_, resolved, inserter))
+      val resolvedEntries = entries.map(resolveEntry(_, resolved, inserter, subtreeAcc))
       // jgit requires sorted entries (git tree order). The TreeWalk visited
       // them in tree order already, so we keep that order.
       resolvedEntries.foreach { e =>
         tf.append(e.name, e.mode, e.id)
         if (e.copyBytes) copyBlobIfMissing(e.id, inserter)
       }
-      inserter.insert(tf)
+      val newId = inserter.insert(tf)
+      subtreeAcc.update(origId.name, newId.name)
+      newId
   }
 
   private def resolveEntry(
       entry: EntryPlan,
       resolved: IMap[(String, String), ObjectId],
-      inserter: ObjectInserter
+      inserter: ObjectInserter,
+      subtreeAcc: scala.collection.mutable.Map[String, String]
   ): ResolvedEntry = entry match {
     case EntryUnchanged(name, mode, id, copyBytes) =>
       ResolvedEntry(name, mode, id, copyBytes)
     case EntrySubtree(name, mode, sub) =>
-      val subId = assemble(sub, resolved, inserter)
+      val subId = assemble(sub, resolved, inserter, subtreeAcc)
       ResolvedEntry(name, mode, subId, copyBytes = false)
     case EntryBlobHit(name, mode, newId) =>
       // The new blob was inserted in a prior run; verify-or-copy is unneeded
@@ -517,7 +984,8 @@ final class Walker(
   private def rewriteAnnotatedTag(orig: RevTag, mappedCommit: ObjectId, inserter: ObjectInserter): ObjectId = {
     val tb = new TagBuilder
     tb.setTag(orig.getTagName)
-    tb.setTagger(orig.getTaggerIdent)
+    // null/malformed tagger on some ancient kernel tags -> TagBuilder NPEs; sentinel keeps projection deterministic
+    tb.setTagger(Option(orig.getTaggerIdent).getOrElse(new org.eclipse.jgit.lib.PersonIdent("unknown", "unknown", 0L, 0)))
     tb.setMessage(orig.getFullMessage)
     tb.setObjectId(mappedCommit, OBJ_COMMIT)
     inserter.insert(tb)
@@ -550,7 +1018,7 @@ object Walker {
 
   sealed trait TreePlan
   final case class TreeExisting(newId: ObjectId) extends TreePlan
-  final case class TreeBuild(entries: Vector[EntryPlan]) extends TreePlan
+  final case class TreeBuild(origId: ObjectId, entries: Vector[EntryPlan]) extends TreePlan
 
   sealed trait EntryPlan { def name: String; def mode: FileMode }
   /** Verbatim pass-through: non-matching blob, gitlink, etc. The bytes are
@@ -581,4 +1049,71 @@ object Walker {
   object PlanArtifacts {
     val empty: PlanArtifacts = PlanArtifacts(Vector.empty, 0, Vector.empty)
   }
+
+  // -- pipelined-walk support ------------------------------------------------
+
+  /** Bounded look-ahead: the maximum number of commits the producer may run
+    * ahead of the consumer. Also caps the in-flight tokenization map, keeping
+    * memory flat regardless of history length. Sized well above `parallelism`
+    * so the pool never idles waiting for the producer, but small enough that
+    * memory stays modest. */
+  private val PipelineWindow = 32
+
+  /** Immutable snapshot of a RevCommit, so the consumer never reaches back
+    * into the single-threaded RevWalk that the producer is iterating. */
+  final case class CommitData(
+      origCommitSha: String,
+      parentOrigShas: Vector[String],
+      origTreeId: ObjectId,
+      author: PersonIdent,
+      committer: PersonIdent,
+      encoding: java.nio.charset.Charset,
+      fullMessage: String
+  )
+
+  /** Per-blob worker result handed from a pool thread back to the consumer. */
+  sealed trait BlobResult
+  object BlobResult {
+    /** Replace or Skip: the id the rewritten tree should reference. */
+    final case class Resolved(newId: ObjectId) extends BlobResult
+    /** abort-on-error tripped by a non-zero command exit. */
+    final case class Aborted(stderr: String, exitCode: Int) extends BlobResult
+  }
+
+  /** Items flowing producer -> consumer across the bounded queue. */
+  sealed trait QueueItem
+  final case class CommitItem(
+      data: CommitData,
+      plan: TreePlan,
+      artifacts: PlanArtifacts,
+      missFutures: Map[(String, String), Future[BlobResult]]
+  ) extends QueueItem
+  case object EndOfWalk extends QueueItem
+
+  // -- tree-parallel-walk support (Design B) ---------------------------------
+
+  /** Result of the off-thread tree assembly for one commit. `Built` carries
+    * the new top-tree id plus the resolved matching-blob map (so the consumer
+    * records `blob_map` without re-awaiting); `Aborted` propagates an
+    * abort-on-error that a blob tokenization observed. */
+  sealed trait TreeResult
+  object TreeResult {
+    final case class Built(
+        newTreeId: ObjectId,
+        resolved: IMap[(String, String), ObjectId],
+        subtrees: IMap[String, String]
+    ) extends TreeResult
+    final case class Aborted(stderr: String, exitCode: Int) extends TreeResult
+  }
+
+  /** Items flowing producer -> consumer in the tree-parallel pipeline. The
+    * assembled tree arrives as a future the consumer awaits in order. */
+  sealed trait TreeQueueItem
+  final case class CommitTreeItem(
+      data: CommitData,
+      artifacts: PlanArtifacts,
+      blobKeys: Set[(String, String)],
+      treeFuture: Future[TreeResult]
+  ) extends TreeQueueItem
+  case object EndOfTreeWalk extends TreeQueueItem
 }

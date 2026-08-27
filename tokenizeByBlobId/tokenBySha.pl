@@ -123,15 +123,20 @@ if (-f $filename) {
   # srcml 1.1.0 requires a file extension to parse source code correctly,
   # even when --language is specified. Use SUFFIX so the temp file gets
   # the original file's extension (e.g. .c or .h).
-  my ($fh, $file) = tempfile( "$buildDir/tmpfile-in-XXXXX", SUFFIX => ".$fileExt" );
-  my ($fout, $outfile) = mkstemp( "$buildDir/tmpfile-out-XXXXX" );
-
+  # Fixed input name in a per-run unique dir: ctags derives __anon ids from the
+  # filename, so a stable name gives deterministic output; the dir isolates workers.
+  my $wd = tempdir( "$buildDir/tokdir-XXXXX", CLEANUP => 1 );
+  my $inName = "input.$fileExt";
+  my $file = "$wd/$inName";
+  open(my $fh, '>', $file) or die "unable to write temp input [$file]: $!";
   print $fh $contents;
   close $fh;
 
+  my ($fout, $outfile) = mkstemp( "$buildDir/tmpfile-out-XXXXX" );
+
   my $langOp = "--language=" . $mapLang{$fileExt};
 
-  open(PROC, "$tokenizeCmd $langOp $file |") or die "unable to execute $tokenizeCmd (verify variable BFG_TOKENIZE_CMD) [$tokenizeCmd]";
+  open(PROC, "cd \"$wd\" && $tokenizeCmd $langOp \"$inName\" |") or die "unable to execute $tokenizeCmd (verify variable BFG_TOKENIZE_CMD) [$tokenizeCmd]";
 
   while (<PROC>) {
       print $_;
@@ -144,7 +149,5 @@ if (-f $filename) {
   }
 
   move( $outfile, $filename) or die "The move operation to memoized directory failed: $!";
-
-  unlink($file)
 
 }
