@@ -220,7 +220,7 @@ object Mapping {
     val st = conn.createStatement()
     try Schema.foreach(st.execute) finally st.close()
 
-    val warmConn = warm.map(openWarm)
+    val warmConn = warm.map(p => openWarm(p, command, mask))
 
     val m = new Mapping(conn, warmConn)
     checkOrSetMeta(m, "command", command)
@@ -229,8 +229,9 @@ object Mapping {
   }
 
   /** Open a frozen prior-run DB read-only (query_only + busy_timeout) as a lookup
-    * fallback; never written by us, so concurrent shard readers are safe. */
-  private def openWarm(path: Path): Connection = {
+    * fallback; never written by us, so concurrent shard readers are safe. Rejects a
+    * warm DB whose command/mask differ from this run -- its ids would be foreign. */
+  private def openWarm(path: Path, command: String, mask: String): Connection = {
     val url = s"jdbc:sqlite:${path.toAbsolutePath}"
     val c = DriverManager.getConnection(url)
     val st = c.createStatement()
@@ -238,7 +239,25 @@ object Mapping {
       st.execute("PRAGMA query_only = ON")
       st.execute("PRAGMA busy_timeout = 30000")
     } finally st.close()
+    checkWarmMeta(c, "command", command)
+    checkWarmMeta(c, "mask",    mask)
     c
+  }
+
+  private def checkWarmMeta(c: Connection, key: String, value: String): Unit = {
+    val ps = c.prepareStatement("SELECT value FROM meta WHERE key = ?")
+    ps.setString(1, key)
+    val rs = ps.executeQuery()
+    try
+      if (rs.next()) {
+        val stored = rs.getString(1)
+        if (stored != null && stored != value)
+          throw new MetaMismatchException(
+            s"warm DB meta mismatch on '$key': stored='$stored', requested='$value'. " +
+              "Refusing warm fallback from a different command/mask."
+          )
+      }
+    finally { rs.close(); ps.close() }
   }
 
   /** In-memory variant used by tests. */

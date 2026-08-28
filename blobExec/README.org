@@ -63,6 +63,52 @@ reads =BFG_MEMO_DIR= and =BFG_TOKENIZE_CMD= from the environment. That
 script's own per-blob memo cache is independent of and complementary to the
 SQLite mapping maintained by this jar.
 
+* Walk modes
+
+blobExec walks serially by default. Three optional modes trade memory for
+throughput on large-history repos; all produce a =commit_map= byte-identical
+to the serial walk (trees are content-addressed and the tokenizer is
+deterministic, so parallel/sharded assembly converges on the same ids):
+
+| Flag               | Meaning                                                                     |
+|--------------------+-----------------------------------------------------------------------------|
+| =--pipeline=       | Look-ahead producer/consumer: a producer runs ahead over a bounded window   |
+|                    | submitting deduped blob tokenizations to a pool; one consumer folds in order |
+| =--pipeline-trees= | As =--pipeline=, plus tree assembly is lifted onto the worker pool           |
+| =--shard=K/N=      | Tree-only shard K of N (see Sharding). Exclusive with =--pipeline(-trees)=   |
+| =--warm=<db>=      | Read-only fallback mapping DB (a frozen prior run), consulted only on a      |
+|                    | =blob_map=/=tree_map= miss (never =commit_map=); rejected if its             |
+|                    | =command=/=mask= differ from this run                                       |
+
+* Sharding
+
+For a cold whole-history build that would exhaust memory in one process, the
+tokenize + tree-assembly work can be split into N independent shards and merged:
+
+#+begin_src sh
+# Any repo: run N shards in parallel, then merge + serial re-fold.
+blobExec/shard_build.sh --src <src.git> --out <dir> --shards N [--warm-db D --warm-git G]
+#+end_src
+
+Each shard runs =blobExec --shard=K/N= into its own =dst.git= + =blobmap.db=
+(tree-only: it tokenizes matching blobs and builds trees but resolves no
+parents, writes no =commit_map=, and projects no refs, so shards are
+independent). =shard_merge.py= then unions every shard's content-addressed
+=blob_map=/=tree_map= (=INSERT OR IGNORE=, conflict-free) and dst objects and
+runs one stock serial re-fold: with a fully-warm =tree_map= the re-fold
+tokenizes nothing and only rebuilds the commit hash-chain, reproducing the
+serial =commit_map=. Commits are partitioned by ordinal position in the
+TOPO+REVERSE vector.
+
+* Memo compatibility
+
+=tokenBySha.pl= produces deterministic output for a given blob: its result is a
+function of the blob's content and file extension only. Its memo is keyed by
+=sha1(content)=, so a memo directory is safe to reuse only across runs of the
+same tokenizer — mixing memos from different tokenizer versions returns
+inconsistent output under identical keys. Use a fresh =BFG_MEMO_DIR= per
+tokenizer version (=shard_build.sh= uses one memo per shard).
+
 * Incremental updates
 
 If =<dst.git>= and =<db.sqlite>= both already exist when the program runs,
