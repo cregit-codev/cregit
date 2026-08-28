@@ -11,7 +11,7 @@ import java.nio.file.{Files, Paths}
  * destination repo and persists `(orig → new)` mappings to SQLite, so a
  * subsequent invocation can resume incrementally.
  *
- *   blobExec [--abort-on-error] <src.git> <dst.git> <db.sqlite> <command> <fileMaskRegex>
+ *   blobExec [--abort-on-error] [--pipeline | --pipeline-trees | --shard=K/N] [--warm=<db>] <src.git> <dst.git> <db.sqlite> <command> <fileMaskRegex>
  *
  *   --abort-on-error  exit immediately (status 2) on the first non-zero
  *                     exit from <command>, instead of skipping that blob

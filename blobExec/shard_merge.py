@@ -9,7 +9,7 @@ Combine N tree-only shards -- each produced by
 BYTE-IDENTICAL to a single-process serial run, then rebuild that commit_map
 with one stock serial re-fold.
 
-Why this is correct (see cregit_perf/04-sharding-merge.md):
+Why this is correct:
   * blob_map and tree_map are content-addressed (tokenizer output depends only
     on blob content + file extension), so the UNION of every shard's maps
     equals a single full run's maps -- INSERT OR IGNORE is conflict-free.
@@ -33,9 +33,9 @@ Steps:
      warm dst.git and every shard's dst.git. Shards are NOT gc/pruned first
      (their trees/blobs are unreferenced until the re-fold writes commits).
   3. Re-fold: stock serial `blobExec <src> final/dst.git final/blobmap.db cmd
-     mask` (no --shard/--pipeline). Asserts blobsRunThroughCommand == 0 (a
-     non-zero count means a tree_map gap -> the shards did not cover every
-     commit; the run still self-heals by re-tokenizing, but it is flagged).
+     mask` (no --shard/--pipeline). WARNS (non-fatal) if blobsRunThroughCommand
+     != 0 -- a non-zero count means a tree_map gap (shards did not cover every
+     commit); the run still self-heals by re-tokenizing deterministically.
   4. git repack -adf + fsck the final repo so it is self-contained.
 
 Run inside `devenv shell` so the re-fold has perl/srcml/ctags on PATH (only
