@@ -472,6 +472,7 @@ final class Walker(
             val rc   = iter.next()
             val data = snapshotCommit(rc)
             val (plan, artifacts) = buildTreePlan(rc.getTree.getId, pathPrefix = "")
+            rc.disposeBody()  // snapshot + plan copied all needed fields; free the body so they don't accumulate
             // De-dup within the commit, then submit/reuse across the window.
             val uniqueMisses = artifacts.misses.iterator
               .map(m => (m.origId.name, m.fullPath) -> m).toMap
