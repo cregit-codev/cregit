@@ -163,7 +163,11 @@ object Main {
 
     val stats = try {
       val parallelism = math.max(1, Runtime.getRuntime.availableProcessors)
-      val walker = new Walker(src, dst, mapping, mask.r, command, abortOnError, parallelism, pipeline, pipelineTrees, shard)
+      val walker = new Walker(
+        src, dst, mapping, mask.r, command, abortOnError, parallelism,
+        pipeline, pipelineTrees, shard,
+        destinationMayContainObjects = incremental
+      )
       walker.run()
     } finally {
       mapping.close()
@@ -174,7 +178,15 @@ object Main {
     println(
       s"blobExec done: commitsProcessed=${stats.commitsProcessed} " +
         s"blobsRunThroughCommand=${stats.blobsRunThroughCommand} " +
+        s"blobCommandExecutions=${stats.blobCommandExecutions} " +
         s"blobsCacheHit=${stats.blobsCacheHit} " +
+        s"originalBlobCopyRequests=${stats.originalBlobCopyRequests} " +
+        s"originalBlobCopies=${stats.originalBlobCopies} " +
+        s"originalBlobAlreadyPresent=${stats.originalBlobAlreadyPresent} " +
+        s"originalBlobCacheHits=${stats.originalBlobCacheHits} " +
+        s"originalBlobDestinationLookups=${stats.originalBlobDestinationLookups} " +
+        s"originalBlobBytesCopied=${stats.originalBlobBytesCopied} " +
+        s"originalBlobBytesAvoided=${stats.originalBlobBytesAvoided} " +
         s"refsProjected=${stats.refsProjected} " +
         s"aborted=${stats.aborted}"
     )
