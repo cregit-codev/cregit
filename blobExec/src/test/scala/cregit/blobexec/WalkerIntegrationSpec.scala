@@ -77,12 +77,22 @@ class WalkerIntegrationSpec extends AnyFunSuite with Matchers with BeforeAndAfte
       dbPath: Path,
       command: String,
       mask: String,
-      abortOnError: Boolean = false
+      abortOnError: Boolean = false,
+      pipeline: Boolean = false,
+      pipelineTrees: Boolean = false,
+      parallelism: Int = 4,
+      deduplicateOriginalBlobs: Boolean = true
   ): WalkStats = {
+    val destinationMayContainObjects = Files.isDirectory(dstPath)
     val dst = openBare(dstPath)
     val mapping = Mapping.open(dbPath, command, mask)
     try {
-      val walker = new Walker(srcRepo, dst, mapping, mask.r, command, abortOnError, parallelism = 4)
+      val walker = new Walker(
+        srcRepo, dst, mapping, mask.r, command, abortOnError, parallelism,
+        pipeline = pipeline, pipelineTrees = pipelineTrees,
+        deduplicateOriginalBlobs = deduplicateOriginalBlobs,
+        destinationMayContainObjects = destinationMayContainObjects
+      )
       walker.run()
     } finally {
       mapping.close()
@@ -220,6 +230,75 @@ class WalkerIntegrationSpec extends AnyFunSuite with Matchers with BeforeAndAfte
       fileAtHead(dst, "master", "a.h") shouldBe Some("DEF\n")
       fileAtHead(dst, "master", "README.md") shouldBe Some("leave-me-alone\n")
     } finally dst.close()
+  }
+
+  test("deduplicating pipeline preserves output and copies a repeated original blob once per run") {
+    val w = freshWorkDir("original-blob-dedup")
+    val srcDir = w.resolve("src")
+    val dstDir = w.resolve("dst.git")
+    val db     = w.resolve("map.sqlite")
+    val baselineDstDir = w.resolve("baseline-dst.git")
+    val baselineDb     = w.resolve("baseline-map.sqlite")
+    val cmd    = shellScript(w, "tr a-z A-Z")
+
+    val git = initSrc(srcDir)
+    val unchanged = "stable documentation\n"
+    writeAndCommit(git, Map("a.c" -> "version 0\n", "README.md" -> unchanged), "c0")
+    (1 until 12).foreach { i =>
+      writeAndCommit(git, Map("a.c" -> s"version $i\n"), s"c$i")
+    }
+
+    val baseline = runWalker(
+      git.getRepository, baselineDstDir, baselineDb, cmd, """\.c$""",
+      pipelineTrees = true, parallelism = 4,
+      deduplicateOriginalBlobs = false
+    )
+    baseline.blobCommandExecutions shouldEqual 12L
+    baseline.originalBlobCopyRequests shouldEqual 12L
+    baseline.originalBlobCopies shouldEqual 12L
+    baseline.originalBlobCacheHits shouldEqual 0L
+    baseline.originalBlobBytesCopied shouldEqual unchanged.getBytes(UTF_8).length.toLong * 12L
+
+    val first = runWalker(
+      git.getRepository, dstDir, db, cmd, """\.c$""",
+      pipelineTrees = true, parallelism = 4,
+      deduplicateOriginalBlobs = true
+    )
+
+    first.blobCommandExecutions shouldEqual 12L
+    first.originalBlobCopyRequests shouldEqual 12L
+    first.originalBlobCopies shouldEqual 1L
+    first.originalBlobAlreadyPresent shouldEqual 11L
+    first.originalBlobCacheHits shouldEqual 11L
+    first.originalBlobDestinationLookups shouldEqual 0L
+    first.originalBlobBytesCopied shouldEqual unchanged.getBytes(UTF_8).length.toLong
+    first.originalBlobBytesAvoided shouldEqual unchanged.getBytes(UTF_8).length.toLong * 11L
+
+    val baselineDst = openBare(baselineDstDir)
+    val dst = openBare(dstDir)
+    try {
+      fileAtHead(dst, "master", "README.md") shouldBe Some(unchanged)
+      dst.exactRef("refs/heads/master").getObjectId shouldEqual
+        baselineDst.exactRef("refs/heads/master").getObjectId
+    } finally {
+      dst.close()
+      baselineDst.close()
+    }
+
+    writeAndCommit(git, Map("a.c" -> "version 12\n"), "c12")
+    val incremental = runWalker(
+      git.getRepository, dstDir, db, cmd, """\.c$""",
+      pipelineTrees = true, parallelism = 4,
+      deduplicateOriginalBlobs = true
+    )
+    incremental.commitsProcessed shouldEqual 1
+    incremental.blobCommandExecutions shouldEqual 1L
+    incremental.originalBlobCopyRequests shouldEqual 1L
+    incremental.originalBlobCopies shouldEqual 0L
+    incremental.originalBlobAlreadyPresent shouldEqual 1L
+    incremental.originalBlobCacheHits shouldEqual 0L
+    incremental.originalBlobDestinationLookups shouldEqual 1L
+    incremental.originalBlobBytesAvoided shouldEqual unchanged.getBytes(UTF_8).length.toLong
   }
 
   test("cache hit: re-run on unchanged src skips the external command") {

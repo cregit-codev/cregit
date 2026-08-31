@@ -80,6 +80,13 @@ deterministic, so parallel/sharded assembly converges on the same ids):
 |                    | =blob_map=/=tree_map= miss (never =commit_map=); rejected if its             |
 |                    | =command=/=mask= differ from this run                                       |
 
+* Original-blob cache
+
+The walker keeps a bounded in-memory cache of original blobs already copied to
+the destination. This avoids reading and hashing the same unchanged blob on
+every tree occurrence. Incremental runs verify cache misses against the existing
+destination; cache collisions can add a lookup but cannot omit an object.
+
 * Sharding
 
 For a cold whole-history build that would exhaust memory in one process, the

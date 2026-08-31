@@ -6,7 +6,7 @@ import org.eclipse.jgit.revwalk.{RevCommit, RevSort, RevTag, RevWalk}
 import org.eclipse.jgit.treewalk.{CanonicalTreeParser, TreeWalk}
 
 import java.util.concurrent.{ArrayBlockingQueue, BlockingQueue, ConcurrentHashMap, Executors, TimeUnit}
-import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference, AtomicReferenceArray, LongAdder}
 import scala.collection.immutable.{Map => IMap}
 import scala.concurrent.duration._
 import scala.concurrent.{Await, ExecutionContext, Future}
@@ -19,7 +19,15 @@ final case class WalkStats(
     blobsRunThroughCommand: Int,
     blobsCacheHit: Int,
     refsProjected: Int,
-    aborted: Boolean
+    aborted: Boolean,
+    blobCommandExecutions: Long,
+    originalBlobCopyRequests: Long,
+    originalBlobCopies: Long,
+    originalBlobAlreadyPresent: Long,
+    originalBlobCacheHits: Long,
+    originalBlobDestinationLookups: Long,
+    originalBlobBytesCopied: Long,
+    originalBlobBytesAvoided: Long
 )
 
 /** Rebuild `src` history into `dst`, persisting mappings to `mapping`.
@@ -34,7 +42,9 @@ final class Walker(
     parallelism: Int,
     pipeline: Boolean = false,
     pipelineTrees: Boolean = false,
-    shard: Option[(Int, Int)] = None
+    shard: Option[(Int, Int)] = None,
+    deduplicateOriginalBlobs: Boolean = true,
+    destinationMayContainObjects: Boolean = true
 ) {
   import Walker._
 
@@ -42,6 +52,18 @@ final class Walker(
   // pipelined producer reads while the consumer writes. Tokenizer workers never
   // touch it, so the CPU-heavy path stays lock-free.
   private val dbLock = new AnyRef
+
+  private val blobCommandExecutions          = new LongAdder
+  private val originalBlobCopyRequests       = new LongAdder
+  private val originalBlobCopies             = new LongAdder
+  private val originalBlobAlreadyPresent     = new LongAdder
+  private val originalBlobCacheHits          = new LongAdder
+  private val originalBlobDestinationLookups = new LongAdder
+  private val originalBlobBytesCopied        = new LongAdder
+  private val originalBlobBytesAvoided       = new LongAdder
+
+  private val originalBlobCache = new AtomicReferenceArray[OriginalBlobCacheEntry](OriginalBlobCacheSize)
+  private val originalBlobCopyLocks = Array.fill[AnyRef](OriginalBlobCopyLockCount)(new AnyRef)
 
   // -- entry point ---------------------------------------------------------
 
@@ -76,7 +98,15 @@ final class Walker(
         blobsRunThroughCommand = blobsRun,
         blobsCacheHit          = blobsHit,
         refsProjected          = refsCount,
-        aborted                = aborted
+        aborted                = aborted,
+        blobCommandExecutions       = blobCommandExecutions.sum(),
+        originalBlobCopyRequests    = originalBlobCopyRequests.sum(),
+        originalBlobCopies          = originalBlobCopies.sum(),
+        originalBlobAlreadyPresent  = originalBlobAlreadyPresent.sum(),
+        originalBlobCacheHits       = originalBlobCacheHits.sum(),
+        originalBlobDestinationLookups = originalBlobDestinationLookups.sum(),
+        originalBlobBytesCopied     = originalBlobBytesCopied.sum(),
+        originalBlobBytesAvoided    = originalBlobBytesAvoided.sum()
       )
     } finally revWalk.close()
   }
@@ -103,7 +133,15 @@ final class Walker(
       blobsRunThroughCommand = blobsRun,
       blobsCacheHit          = blobsHit,
       refsProjected          = 0,     // shards deliberately never project refs
-      aborted                = aborted
+      aborted                = aborted,
+      blobCommandExecutions       = blobCommandExecutions.sum(),
+      originalBlobCopyRequests    = originalBlobCopyRequests.sum(),
+      originalBlobCopies          = originalBlobCopies.sum(),
+      originalBlobAlreadyPresent  = originalBlobAlreadyPresent.sum(),
+      originalBlobCacheHits       = originalBlobCacheHits.sum(),
+      originalBlobDestinationLookups = originalBlobDestinationLookups.sum(),
+      originalBlobBytesCopied     = originalBlobBytesCopied.sum(),
+      originalBlobBytesAvoided    = originalBlobBytesAvoided.sum()
     )
   }
 
@@ -598,6 +636,7 @@ final class Walker(
     val bytes = readBlob(task.origId)
     val workerInserter = dst.newObjectInserter()
     try {
+      blobCommandExecutions.increment()
       val outcome = BlobExec.run(
         bytes        = bytes,
         origSha      = task.origId.name,
@@ -609,7 +648,8 @@ final class Walker(
       )
       val res = outcome match {
         case BlobExec.Outcome.Skip =>
-          workerInserter.insert(OBJ_BLOB, bytes); BlobResult.Resolved(task.origId)
+          ensureOriginalBlobAvailable(task.origId, bytes, workerInserter)
+          BlobResult.Resolved(task.origId)
         case BlobExec.Outcome.Replace(newId) =>
           BlobResult.Resolved(newId)
         case BlobExec.Outcome.Abort(stderr, code) =>
@@ -732,6 +772,7 @@ final class Walker(
         val bytes = readBlob(task.origId)
         val workerInserter = dst.newObjectInserter()
         try {
+          blobCommandExecutions.increment()
           val outcome = BlobExec.run(
             bytes        = bytes,
             origSha      = task.origId.name,
@@ -747,7 +788,7 @@ final class Walker(
           // For Replace outcomes the worker has already inserted the new
           // blob. For Abort we do nothing (caller short-circuits).
           outcome match {
-            case BlobExec.Outcome.Skip => workerInserter.insert(OBJ_BLOB, bytes); ()
+            case BlobExec.Outcome.Skip => ensureOriginalBlobAvailable(task.origId, bytes, workerInserter)
             case _                     => ()
           }
           workerInserter.flush()
@@ -825,16 +866,83 @@ final class Walker(
       ResolvedEntry(name, mode, newId, copyBytes = false)
   }
 
-  /** Copy a blob from src into dst if it isn't already present.
-    * Cheaper to just re-insert (jgit dedupes by id) than to query first. */
-  private def copyBlobIfMissing(id: ObjectId, inserter: ObjectInserter): Unit = {
-    val reader = src.newObjectReader()
+  private def ensureOriginalBlobAvailable(
+      id: ObjectId,
+      bytes: => Array[Byte],
+      inserter: ObjectInserter
+  ): Unit = {
+    originalBlobCopyRequests.increment()
+
+    if (!deduplicateOriginalBlobs) {
+      val content = bytes
+      inserter.insert(OBJ_BLOB, content)
+      originalBlobCopies.increment()
+      originalBlobBytesCopied.add(content.length.toLong)
+      return
+    }
+
+    val cacheSlot = id.hashCode() & (originalBlobCache.length() - 1)
+    val cached = cachedOriginalBlob(cacheSlot, id)
+    if (cached ne null) {
+      originalBlobCacheHits.increment()
+      recordOriginalBlobAlreadyPresent(cached.size)
+      return
+    }
+
+    val stripe = originalBlobCopyLocks(cacheSlot & (originalBlobCopyLocks.length - 1))
+    stripe.synchronized {
+      val rechecked = cachedOriginalBlob(cacheSlot, id)
+      if (rechecked ne null) {
+        originalBlobCacheHits.increment()
+        recordOriginalBlobAlreadyPresent(rechecked.size)
+      } else {
+        // A fresh destination cannot contain the object. Cache collisions and
+        // incremental runs still require an existence check before insertion.
+        val occupiedSlot = originalBlobCache.get(cacheSlot) ne null
+        val existingSize =
+          if (destinationMayContainObjects || occupiedSlot) {
+            originalBlobDestinationLookups.increment()
+            originalBlobSizeInDestination(id)
+          } else None
+        val size = existingSize match {
+          case Some(value) =>
+            recordOriginalBlobAlreadyPresent(value)
+            value
+          case None =>
+            val content  = bytes
+            val inserted = inserter.insert(OBJ_BLOB, content)
+            if (inserted != id)
+              throw new IllegalStateException(
+                s"original blob ${id.name} produced unexpected id ${inserted.name} while copying to dst")
+            originalBlobCopies.increment()
+            originalBlobBytesCopied.add(content.length.toLong)
+            content.length.toLong
+        }
+        originalBlobCache.set(cacheSlot, OriginalBlobCacheEntry(id.copy(), size))
+      }
+    }
+  }
+
+  private def cachedOriginalBlob(slot: Int, id: ObjectId): OriginalBlobCacheEntry = {
+    val entry = originalBlobCache.get(slot)
+    if ((entry ne null) && entry.id == id) entry else null
+  }
+
+  private def originalBlobSizeInDestination(id: ObjectId): Option[Long] = {
+    val reader = dst.newObjectReader()
     try {
-      val loader = reader.open(id, OBJ_BLOB)
-      val bytes  = loader.getBytes
-      inserter.insert(OBJ_BLOB, bytes)
-      ()
+      if (reader.has(id, OBJ_BLOB)) Some(reader.getObjectSize(id, OBJ_BLOB))
+      else None
     } finally reader.close()
+  }
+
+  private def recordOriginalBlobAlreadyPresent(size: Long): Unit = {
+    originalBlobAlreadyPresent.increment()
+    originalBlobBytesAvoided.add(size)
+  }
+
+  private def copyBlobIfMissing(id: ObjectId, inserter: ObjectInserter): Unit = {
+    ensureOriginalBlobAvailable(id, readBlob(id), inserter)
   }
 
   // -- commit construction -------------------------------------------------
@@ -1012,6 +1120,11 @@ final class Walker(
 }
 
 object Walker {
+
+  private val OriginalBlobCacheSize = 1 << 16
+  private val OriginalBlobCopyLockCount = 256
+
+  private final case class OriginalBlobCacheEntry(id: ObjectId, size: Long)
 
   // Pure data describing how to assemble a rewritten tree. Hoisted out of
   // `Walker` so case-class pattern matches don't need to check an outer
