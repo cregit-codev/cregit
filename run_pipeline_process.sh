@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
     cat >&2 <<'EOF'
-usage: run_pipeline_process.sh [--mode MODE] [--shards N] [FROM_STEP]
+usage: run_pipeline_process.sh [--mode MODE] [--shards N] [--jobs N] [FROM_STEP]
 
   --mode MODE   tokenizer walk mode (default: pipeline)
                   serial          single-threaded reference walker
@@ -13,6 +13,8 @@ usage: run_pipeline_process.sh [--mode MODE] [--shards N] [FROM_STEP]
                                   for repos too large to tokenize in one process;
                                   delegates to blobExec/shard_build.sh
   --shards N    shard count for --mode sharded (default: 4)
+  --jobs N      concurrent blame/HTML processes
+                (default: CREGIT_JOBS or min(CPUs, 16))
   FROM_STEP     resume from this step number (default: 1). A full run (step 1)
                 starts clean; resuming keeps existing work.
 EOF
@@ -29,11 +31,15 @@ log() {
 
 MODE="pipeline"
 SHARDS=4
+CPU_COUNT=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)
+[ "$CPU_COUNT" -gt 16 ] && CPU_COUNT=16
+JOBS=${CREGIT_JOBS:-$CPU_COUNT}
 FROM_STEP=1
 while [ $# -gt 0 ]; do
     case "$1" in
         --mode)   MODE="$2"; shift 2 ;;
         --shards) SHARDS="$2"; shift 2 ;;
+        --jobs)   JOBS="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         ''|*[!0-9]*) echo "unknown argument: $1" >&2; usage; exit 2 ;;
         *) FROM_STEP="$1"; shift ;;
@@ -47,6 +53,7 @@ esac
 if [ "$MODE" = "sharded" ]; then
     [ "$SHARDS" -ge 1 ] 2>/dev/null || { echo "--shards must be a positive integer" >&2; exit 2; }
 fi
+[ "$JOBS" -ge 1 ] 2>/dev/null || { echo "--jobs must be a positive integer" >&2; exit 2; }
 
 step() {
     STEP_NUM=${STEP_NUM:-0}
@@ -116,7 +123,7 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo ""
 echo "████████████████████████████████████████████████████████████████████████"
-echo "  CreGit Pipeline — ${REPO_NAME} (tokenize mode: ${MODE})"
+echo "  CreGit Pipeline — ${REPO_NAME} (tokenize mode: ${MODE}, file jobs: ${JOBS})"
 echo "  Log: $LOG_FILE"
 echo "████████████████████████████████████████████████████████████████████████"
 echo ""
@@ -230,6 +237,7 @@ step "blame"
 if [ "$STEP_NUM" -ge "$FROM_STEP" ]; then
 [ -d "$REPO_PATH_CREGIT" ] || die "step 6 did not produce $REPO_PATH_CREGIT"
 perl $CREGIT/blameRepo/blameRepoFiles.pl --verbose \
+  --jobs="$JOBS" \
   --formatBlame=$CREGIT/blameRepo/formatBlame.pl \
   $REPO_PATH_CREGIT $WORK/blame "$MASK"
 fi
@@ -253,6 +261,7 @@ step "generate HTML views"
 if [ "$STEP_NUM" -ge "$FROM_STEP" ]; then
 [ -f "$DB_PATH_CREGIT" ] || die "step 8 did not complete"
 perl $CREGIT/prettyPrint/prettyPrintFiles.pl --verbose \
+  --jobs="$JOBS" \
   $DB_PATH_CREGIT $DB_PATH_PERSONS \
   $REPO_PATH_ORIGINAL $WORK/blame $WORK/html \
   $REPO_COMMIT_URL "$MASK"
