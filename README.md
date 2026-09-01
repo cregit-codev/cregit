@@ -91,6 +91,8 @@ The entire pipeline can be executed with:
 ```
 
 By default, the script starts from step 1 and executes the complete pipeline.
+Blame and HTML generation process independent files concurrently, using up to
+16 CPUs by default. Use `--jobs N` (or `CREGIT_JOBS=N`) to set another limit.
 
 To resume the pipeline from a specific step, pass the step number as the first
 argument. For example, to resume from step 5:
@@ -153,7 +155,7 @@ java -jar persons.jar /path/to/xournal /tmp/xournal.xls /tmp/xournal-persons.db
 ### e. Create blame of cregit files
 
 ```sh
-perl blameRepoFiles.pl --verbose --formatBlame=./formatBlame.pl /tmp/xournal /tmp/blame '\.[ch]$'
+perl blameRepoFiles.pl --verbose --jobs=16 --formatBlame=./formatBlame.pl /tmp/xournal /tmp/blame '\.[ch]$'
 ```
 
 ### f. Create the table with the map from newcommits to commits
@@ -167,7 +169,7 @@ java -jar remapCommits.jar /tmp/xournal-cregit.db /tmp/xournal
 Example:
 
 ```sh
-perl ./prettyPrintFiles.pl --verbose /tmp/xournal-cregit.db /tmp/xournal-persons.db /path/to/xournal /tmp/blame /tmp/html https://github.com/OWNER/xournal/commit/ '\.[ch]$'
+perl ./prettyPrintFiles.pl --verbose --jobs=16 /tmp/xournal-cregit.db /tmp/xournal-persons.db /path/to/xournal /tmp/blame /tmp/html https://github.com/OWNER/xournal/commit/ '\.[ch]$'
 ```
 
 ## Contributing
