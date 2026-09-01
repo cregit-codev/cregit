@@ -31,7 +31,6 @@
 
  
 use Digest::SHA qw(sha1_hex);
-use DBI;
 use File::Temp qw/ tempfile tempdir mkstemp/;
 use strict;
 use File::Path qw(make_path);
