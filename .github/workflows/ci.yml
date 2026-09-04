@@ -32,7 +32,16 @@ jobs:
           name: devenv
 
       - name: Install devenv
-        run: nix profile install nixpkgs#devenv
+        run: nix profile install github:cachix/devenv/v2.2.1
+
+      - name: Prime devenv shell (retry flaky cold-store eval)
+        run: |
+          for i in 1 2 3; do
+            devenv shell -- true && exit 0
+            echo "devenv eval attempt $i failed; clearing eval cache and retrying"
+            rm -rf .devenv
+          done
+          exit 1
 
       - name: Cache sbt dependencies
         uses: actions/cache@v6
