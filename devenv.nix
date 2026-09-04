@@ -89,6 +89,8 @@ in
     pkgs.sbt
 
     perlEnv
+
+    (pkgs.python3.withPackages (ps: [ ps.duckdb ]))
   ];
 
   # Scala 2.13 + sbt 1.x needs a modern JDK; the legacy sbt 0.13 hack is gone.
