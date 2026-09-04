@@ -10,11 +10,38 @@ project.
 The original upstream repository is available at
 https://github.com/cregit/cregit.
 
+## Quickstart
+
+Requires [Nix](https://nixos.org/download/) and
+[devenv](https://devenv.sh/getting-started/); everything else (JDKs, sbt,
+srcml, ctags, cargo, the Perl modules) is pinned by [`devenv.nix`](./devenv.nix).
+
+```sh
+git clone https://github.com/ccsl-codev/cregit.git
+cd cregit
+devenv shell               # enter the pinned toolchain
+./run_pipeline_process.sh --repo-url https://github.com/OWNER/REPO.git
+```
+
+The script builds anything missing first, then runs the whole pipeline on the
+repository you point it at — e.g. `--repo-url https://github.com/jqlang/jq.git`
+makes a nice small C demo.
+
+Tip: with [direnv](https://direnv.net/) installed, run `direnv allow` once in
+the checkout — the repo ships an [`.envrc`](./.envrc), so the devenv shell then
+activates automatically whenever you `cd` in, and typing `devenv shell` is no
+longer needed.
+
+By default only C files (`'\.[ch]$'`) are tokenized; pass `--mask` for other
+languages (C, C++, Java, Rust and m4 are supported). The browsable per-file
+HTML views land in the sibling directory `../cregit-files/html`. See
+[How to use](#how-to-use) for all flags and outputs.
+
 ## Preliminaries
 
-- Code is written in Scala, C++ and Perl.
-- For Scala code, use `sbt` to build and run programs. It is the easiest.
-- This code has only being tested under Linux, but it should run under MacOS.
+- Code is written in Scala, C++, Rust and Perl.
+- Platform: Linux x86_64 or macOS arm64 — the pinned `srcml` 1.1.0 parser is a
+  prebuilt binary available only for those platforms.
 
 ## Prerequisites
 
@@ -39,18 +66,28 @@ cmake libarchive-dev libxml++2.6-dev libxml2-dev libcurl4-openssl-dev libxslt1-d
 
 ## How to build
 
-Compile _slickGitLog_, _persons_, _remapCommits_ with `sbt` in their directories (`sbt` can be found at
-https://www.scala-sbt.org/download.html repo):
+The pipeline script builds any missing artifact automatically before a run.
+To build everything explicitly (inside `devenv shell`):
 
 ```sh
-sbt one-jar
+./run_pipeline_process.sh --build-only
 ```
 
-Compile [blobExec](./blobExec) with `sbt assembly` in its directory (replaces the old bfg fork).
+This builds, in dependency order:
 
-Use `make` to compile [srcMLtoken](./tokenize/srcMLtoken).
+| artifact                                                      | module              | toolchain                 |
+| ------------------------------------------------------------- | ------------------- | ------------------------- |
+| `tokenize/srcMLtoken/srcml2token`                              | C++ transcoder      | gcc + xerces-c            |
+| `tokenize/rustTokenizer` binary                                | Rust tokenizer      | cargo                     |
+| `blobExec/target/scala-2.13/blobExec-0.1.0-assembly.jar`       | tokenization driver | sbt, JDK 21               |
+| `{slickGitLog,persons,remapCommits}/target/scala-2.10/*-one-jar.jar` | history / persons / remap tools | sbt 0.13, JDK 8 |
 
-Perl scripts can be run without compilation.
+To build a single module manually: `sbt assembly` in `blobExec`;
+`sbt --java-home "$LEGACY_JAVA_HOME" one-jar` in `slickGitLog`, `persons` or
+`remapCommits` (they are Scala 2.10 and do not build on a modern JDK); `make`
+in `tokenize/srcMLtoken` and `tokenize/rustTokenizer`. Build `srcml2token`
+before running the pipeline or the Perl test suite — the tokenizer shells out
+to it.
 
 ## How to test
 
@@ -77,98 +114,69 @@ running `prove`.
 
 ## How to use
 
-This is the workflow to process a git repository with cregit, and to generate the HTML views of its contributions.
-
-- It assumes that the cregit-repository will be created in `/tmp/xournal`
-- The original repository is usually located at `/path/to/xournal`
-
-### Observation
-
-The entire pipeline can be executed with:
+`run_pipeline_process.sh` is the driver for the whole pipeline: it clones the
+target repository, tokenizes it (rewriting each matched blob to its
+token-level representation), builds the history and persons databases, blames
+every tokenized file, generates the HTML views and writes a unified Parquet
+dataset (see [generate_dataset/DATASET.md](./generate_dataset/DATASET.md)).
 
 ```sh
-./run_pipeline_process.sh
+# a small C project (demo-sized):
+./run_pipeline_process.sh --repo-url https://github.com/jqlang/jq.git
+
+# a Java project, with its own output directory:
+./run_pipeline_process.sh \
+  --repo-url https://github.com/OWNER/REPO.git \
+  --mask '\.java$' \
+  --work ../cregit-files-REPO
 ```
 
-By default, the script starts from step 1 and executes the complete pipeline.
+Flags (see `./run_pipeline_process.sh --help` for the full list):
 
-To resume the pipeline from a specific step, pass the step number as the first
-argument. For example, to resume from step 5:
+| flag                  | meaning                                                    | default                          |
+| --------------------- | ---------------------------------------------------------- | -------------------------------- |
+| `--repo-url`          | git URL or local path of the repository to process         | **required**                     |
+| `--repo-name`         | short name prefixed to the output files                    | derived from `--repo-url`        |
+| `--commit-url`        | base URL for commit links in the generated HTML            | `<repo-url minus .git>/commit/`  |
+| `--mask`              | regex of files to tokenize (C, C++, Java, Rust, m4); quote it | `'\.[ch]$'`                   |
+| `--work`              | working/output directory                                   | `../cregit-files`                |
+| `--mode` / `--shards` | tokenizer walk mode / shard count for `sharded`            | `pipeline` / `4`                 |
 
-```sh
-./run_pipeline_process.sh 5
-```
+A full run starts by **deleting the work directory** — to keep several target
+repositories side by side, give each its own `--work`. To resume a failed run
+without starting over, pass the step number printed in the step banners (with
+the same target flags), e.g. `./run_pipeline_process.sh --repo-url … 5`.
 
-Example run with default parameters (used jqlang/jq repository):
+Example run (on the jqlang/jq repository):
 ![Example cregit run](cregit.gif)
 p.s.: gif is sped up.
 
-### a. Create the view repository
+### Outputs
 
-To tokenize the files we require to create some environment variables to communicate with the tokenizing script:
+Everything lands in the work directory (default: `../cregit-files`, a sibling
+of the checkout):
 
-|                    |                                                      |
-| ------------------ | ---------------------------------------------------- |
-| `BFG_MEMO_DIR`     | directory to use for memoization of tokenized files  |
-| `BFG_TOKENIZE_CMD` | command to use to tokenize, might include parameters |
+| path                                    | content                                          |
+| --------------------------------------- | ------------------------------------------------ |
+| `html/`                                 | per-file HTML views of token-level contributions |
+| `<name>-dataset.parquet`                | unified token/commit/author dataset ([schema](./generate_dataset/DATASET.md)) |
+| `<name>-cregit.git`, `<name>-cregit/`   | the tokenized ("view") repository                |
+| `<name>-original.git`, `<name>-original/` | bare + working clones of the target repository |
+| `<name>-*.db`                           | SQLite databases: history (original and cregit), blob map, persons |
+| `blame/`                                | per-file token blame                             |
+| `pipeline.log`                          | full log of the run                              |
 
-Example:
+### Environment variables
 
-- use the `tokenizeByBlobId/tokenBySha.pl` to do the tokenization.
-- `tokenBySha.pl` will execute.
+The pipeline script sets these itself; you only need them when invoking the
+tools manually (the numbered steps inside `run_pipeline_process.sh` are the
+reference for manual invocations):
 
-```sh
-./tokenizeSrcMl.pl --srcml2token=<path to srcml2token> --srcml=<path to srcml> --ctags=<path to ctags>
-```
-
-Run it as:
-
-```sh
-export BFG_MEMO_DIR=/tmp/memo
-export BFG_TOKENIZE_CMD="/path/to/cregit/tokenize/tokenizeSrcMl.pl --srcml2token=/path/to/cregit/tokenize/srcMLtoken/srcml2token --srcml=srcml --ctags=/usr/local/bin/ctags"
-java -jar /path/to/cregit/blobExec/target/scala-2.13/blobExec-0.1.0-assembly.jar \
-  /path/repo \
-  /path/to/cregit/tokenizeByBlobId/tokenBySha.pl \
-  '\.[ch]$'
-```
-
-### b. Create the history database for the original repo
-
-```sh
-java -jar slickGitLog.jar /tmp/xournal-original.db /path/to/xournal
-```
-
-### c. Create the history database for the cregit repo
-
-```sh
-java -jar slickGitLog.jar /tmp/xournal-cregit.db /tmp/xournal
-```
-
-### d. Create the persons database
-
-```sh
-java -jar persons.jar /path/to/xournal /tmp/xournal.xls /tmp/xournal-persons.db
-```
-
-### e. Create blame of cregit files
-
-```sh
-perl blameRepoFiles.pl --verbose --formatBlame=./formatBlame.pl /tmp/xournal /tmp/blame '\.[ch]$'
-```
-
-### f. Create the table with the map from newcommits to commits
-
-```sh
-java -jar remapCommits.jar /tmp/xournal-cregit.db /tmp/xournal
-```
-
-### g. Create html version of the files
-
-Example:
-
-```sh
-perl ./prettyPrintFiles.pl --verbose /tmp/xournal-cregit.db /tmp/xournal-persons.db /path/to/xournal /tmp/blame /tmp/html https://github.com/OWNER/xournal/commit/ '\.[ch]$'
-```
+| variable           | meaning                                                                                     |
+| ------------------ | ------------------------------------------------------------------------------------------- |
+| `BFG_MEMO_DIR`     | directory used to memoize tokenized blobs                                                    |
+| `BFG_TOKENIZE_CMD` | tokenize command; the script routes it through `tokenize/tokenize.pl`, which dispatches by file extension |
+| `LEGACY_JAVA_HOME` | JDK 8 home for the Scala 2.10 modules (provided by `devenv shell`)                           |
 
 ## Contributing
 
@@ -183,5 +191,4 @@ The license of Cregit is [GPL-3.0+](LICENSE.md).
 ## TODO
 
 - use preferred name in html files
-- create a driver program for processing an entire repository
 - customize programs to read a JSON file with configuration?
