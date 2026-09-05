@@ -25,7 +25,13 @@ devenv shell               # enter the pinned toolchain
 
 The script builds anything missing first, then runs the whole pipeline on the
 repository you point it at — e.g. `--repo-url https://github.com/jqlang/jq.git`
-makes a nice small C demo.
+makes a nice small C demo. No target repo in mind? Validate the install by
+running cregit on itself — about two minutes end to end (plus the one-time
+build on the first run):
+
+```sh
+./run_pipeline_process.sh --repo-url https://github.com/ccsl-codev/cregit.git --mask '\.(c|cpp|hpp|java|rs)$'
+```
 
 Tip: with [direnv](https://direnv.net/) installed, run `direnv allow` once in
 the checkout — the repo ships an [`.envrc`](./.envrc), so the devenv shell then
@@ -121,6 +127,9 @@ every tokenized file, generates the HTML views and writes a unified Parquet
 dataset (see [generate_dataset/DATASET.md](./generate_dataset/DATASET.md)).
 
 ```sh
+# smoke test — cregit on itself (validates the install, ~2 min):
+./run_pipeline_process.sh --repo-url https://github.com/ccsl-codev/cregit.git --mask '\.(c|cpp|hpp|java|rs)$'
+
 # a small C project (demo-sized):
 ./run_pipeline_process.sh --repo-url https://github.com/jqlang/jq.git
 
@@ -147,9 +156,9 @@ repositories side by side, give each its own `--work`. To resume a failed run
 without starting over, pass the step number printed in the step banners (with
 the same target flags), e.g. `./run_pipeline_process.sh --repo-url … 5`.
 
-Example run (on the jqlang/jq repository):
+Example run (cregit run on itself):
 ![Example cregit run](cregit.gif)
-p.s.: gif is sped up.
+p.s.: long pauses are trimmed.
 
 ### Outputs
 
